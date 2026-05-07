@@ -1,0 +1,6 @@
+{
+  "name": "Multi-Agent WhatsApp",
+  "description": "Caixa de entrada compartilhada para times atenderem pelo WhatsApp simultaneamente.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
