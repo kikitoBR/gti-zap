@@ -8,7 +8,9 @@ CREATE TABLE public.users (
   id UUID REFERENCES auth.users(id) PRIMARY KEY,
   name TEXT NOT NULL,
   email TEXT NOT NULL,
+  role TEXT DEFAULT 'atendente',
   status TEXT DEFAULT 'offline',
+  last_seen_at TIMESTAMP WITH TIME ZONE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -34,6 +36,7 @@ CREATE TABLE public.chats (
   last_message TEXT,
   unread_count INTEGER DEFAULT 0,
   assigned_to UUID REFERENCES public.users(id),
+  notes TEXT,
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
