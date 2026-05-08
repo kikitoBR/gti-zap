@@ -25,6 +25,12 @@ export default function Login({ onLogin }: { onLogin: (user: any) => void }) {
             data: { name }
           }
         }));
+        
+        if (!error && !data.session) {
+          setError('Conta criada com sucesso! Por favor, verifique seu e-mail para confirmar o cadastro antes de entrar. (Ou desative a "Confirmação de E-mail" no painel do Supabase).');
+          setIsSignUp(false);
+          return;
+        }
       } else {
         ({ data, error } = await supabase.auth.signInWithPassword({
           email,

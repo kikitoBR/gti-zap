@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, MoreVertical, Paperclip, Send, User, Check, CheckCheck, MessageSquare, Users, Settings, LogOut, Lock, Unlock } from 'lucide-react';
+import { Search, MoreVertical, Paperclip, Send, User, Check, CheckCheck, MessageSquare, Users, Settings, LogOut, Lock, Unlock, Plus, Clock } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import Login from './Login';
+import AudioPlayer from './components/AudioPlayer';
 
 type Message = {
   id: string;
@@ -11,12 +12,15 @@ type Message = {
   timestamp: string;
   status: 'pending' | 'sent' | 'delivered' | 'read';
   is_incoming: boolean;
+  media_url?: string;
+  media_type?: string;
 };
 
 type Chat = {
   id: string;
   contact_name: string;
   phone_number: string;
+  profile_pic_url?: string;
   last_message: string;
   unread_count: number;
   assigned_to?: string;
@@ -28,6 +32,15 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'all' | 'mine'>('all');
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState('');
+  
+  const [isComposing, setIsComposing] = useState(false);
+  const [composePhone, setComposePhone] = useState('');
+  const [composeText, setComposeText] = useState('');
+  
+  const [isContactProfileOpen, setIsContactProfileOpen] = useState(false);
+  const [contactDetails, setContactDetails] = useState<any>(null);
+  
+  const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
   
   const [chats, setChats] = useState<Chat[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -63,8 +76,9 @@ export default function App() {
         handleNewMessage(payload.new as Message);
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, payload => {
-        if (payload.new && payload.new.id && payload.new.name) {
-          setAgents(prev => ({ ...prev, [payload.new.id]: payload.new.name }));
+        const newUser = payload.new as { id?: string; name?: string };
+        if (newUser && newUser.id && newUser.name) {
+          setAgents(prev => ({ ...prev, [newUser.id as string]: newUser.name as string }));
         }
       })
       .subscribe();
@@ -98,10 +112,28 @@ export default function App() {
       fetchMessages(selectedChatId);
       // Reset unread count se eu assumir ou clicar
       supabase.from('chats').update({ unread_count: 0 }).eq('id', selectedChatId).then();
+      
+      if (isContactProfileOpen) {
+         const chat = chats.find(c => c.id === selectedChatId);
+         if (chat) fetchContactDetails(chat.phone_number);
+      }
     } else {
       setMessages([]);
+      setIsContactProfileOpen(false);
     }
   }, [selectedChatId]);
+
+  const fetchContactDetails = async (phone: string) => {
+    try {
+      const res = await fetch(`http://${window.location.hostname}:3001/contact/${encodeURIComponent(phone)}`);
+      const data = await res.json();
+      if (!data.error) {
+        setContactDetails(data);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const fetchMessages = async (chatId: string) => {
     const { data } = await supabase.from('messages').select('*').eq('chat_id', chatId).order('timestamp', { ascending: true });
@@ -130,12 +162,13 @@ export default function App() {
     e.preventDefault();
     if (!newMessage.trim() || !selectedChat) return;
 
-    const text = newMessage;
+    const currentUserName = agents[user.id] || user.email.split('@')[0] || 'Atendente';
+    const text = `*${currentUserName}*\n\n${newMessage.trim()}`;
     setNewMessage('');
 
     // Enviar via Backend API (que envia pelo WhatsApp Web JS)
     try {
-      await fetch('http://localhost:3001/send', {
+      await fetch(`http://${window.location.hostname}:3001/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -147,6 +180,40 @@ export default function App() {
       });
     } catch (err) {
       console.error('Erro ao enviar msg:', err);
+    }
+  };
+
+  const handleSendNewMessage = async () => {
+    if (!composePhone.trim() || !composeText.trim()) return;
+
+    const currentUserName = agents[user.id] || user.email.split('@')[0] || 'Atendente';
+    const text = `*${currentUserName}*\n\n${composeText.trim()}`;
+
+    try {
+      const res = await fetch(`http://${window.location.hostname}:3001/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: composePhone.trim(),
+          text: text,
+          agentId: user.id
+        })
+      });
+      const data = await res.json();
+      
+      if (data.success) {
+        setIsComposing(false);
+        setComposePhone('');
+        setComposeText('');
+        if (data.chatId) {
+          setSelectedChatId(data.chatId);
+        }
+      } else {
+        alert('Erro ao enviar mensagem: ' + data.error);
+      }
+    } catch (err) {
+      console.error('Erro ao iniciar conversa:', err);
+      alert('Erro ao iniciar conversa.');
     }
   };
 
@@ -186,6 +253,15 @@ export default function App() {
     return isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  const formatPhoneNumber = (phone: string) => {
+    if (!phone) return '';
+    const numberOnly = phone.split('@')[0];
+    if (phone.includes('@lid')) {
+      return `LID: ${numberOnly}`;
+    }
+    return `+${numberOnly}`;
+  };
+
   return (
     <div className="flex h-screen w-full bg-[#f0f2f5] font-sans overflow-hidden">
       
@@ -221,7 +297,16 @@ export default function App() {
       {/* Chat List (Middle-Left) */}
       <div className="w-80 bg-white border-r border-gray-200 flex flex-col">
         <div className="p-4 border-b border-gray-200 bg-[#f0f2f5]">
-          <h1 className="text-xl font-bold text-[#111b21]">Caixa de Entrada</h1>
+          <div className="flex justify-between items-center">
+            <h1 className="text-xl font-bold text-[#111b21]">Caixa de Entrada</h1>
+            <button 
+              onClick={() => { setIsComposing(true); setSelectedChatId(null); }}
+              className="p-1.5 bg-[#00a884] text-white rounded hover:bg-[#008f6f]"
+              title="Nova Conversa"
+            >
+              <Plus size={18} />
+            </button>
+          </div>
           <p className="text-[11px] text-gray-500 uppercase tracking-wider font-bold mt-1">
             Logado: <span className="text-[#00a884]">{agents[user.id] || user.email}</span>
           </p>
@@ -257,12 +342,16 @@ export default function App() {
               onClick={() => setSelectedChatId(chat.id)}
               className={`flex items-center p-3 cursor-pointer border-b border-gray-100 ${selectedChatId === chat.id ? 'bg-[#f0f2f5] border-l-4 border-l-[#00a884]' : 'hover:bg-gray-50 border-l-4 border-l-transparent'}`}
             >
-              <div className="w-12 h-12 bg-blue-100 rounded-full flex-shrink-0 flex items-center justify-center text-blue-600 font-bold">
-                {(chat.contact_name || chat.phone_number).substring(0, 2).toUpperCase()}
+              <div className="w-12 h-12 bg-blue-100 rounded-full flex-shrink-0 flex items-center justify-center text-blue-600 font-bold overflow-hidden">
+                {chat.profile_pic_url ? (
+                  <img src={chat.profile_pic_url} alt="Profile" className="w-full h-full object-cover" />
+                ) : (
+                  (chat.contact_name || formatPhoneNumber(chat.phone_number)).substring(0, 2).toUpperCase()
+                )}
               </div>
               <div className="ml-3 flex-1 overflow-hidden">
                 <div className="flex justify-between items-baseline">
-                  <span className="text-sm font-semibold text-gray-900 truncate pr-2">{chat.contact_name || chat.phone_number}</span>
+                  <span className="text-sm font-semibold text-gray-900 truncate pr-2">{chat.contact_name || formatPhoneNumber(chat.phone_number)}</span>
                   <span className={`text-[10px] ${chat.unread_count > 0 ? 'text-[#00a884] font-bold' : 'text-gray-500'}`}>{formatTime(chat.updated_at)}</span>
                 </div>
                 <p className={`text-xs truncate ${chat.unread_count > 0 ? 'text-gray-800 font-medium' : 'text-gray-500'}`}>{chat.last_message || 'Nenhuma mensagem'}</p>
@@ -288,18 +377,73 @@ export default function App() {
       </div>
 
       {/* Main Chat Area (Right) */}
-      {selectedChat ? (
+      {isComposing ? (
+        <main className="flex-1 flex flex-col items-center justify-center bg-[#f0f2f5] px-10 border-b-8 border-[#00a884]">
+          <div className="bg-white p-8 rounded-lg shadow-sm w-full max-w-md border-t-4 border-[#00a884]">
+            <h2 className="text-xl font-bold text-gray-800 mb-4">Nova Conversa</h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Número do WhatsApp</label>
+                <input 
+                  type="text" 
+                  placeholder="Ex: 5511999999999" 
+                  value={composePhone}
+                  onChange={e => setComposePhone(e.target.value)}
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-[#00a884] outline-none"
+                />
+                <p className="text-xs text-gray-500 mt-1">Digite apenas números, incluindo DDI e DDD (ex: 55 para Brasil).</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Mensagem Inicial</label>
+                <textarea 
+                  rows={4}
+                  placeholder="Olá! Como podemos ajudar?" 
+                  value={composeText}
+                  onChange={e => setComposeText(e.target.value)}
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-[#00a884] outline-none resize-none"
+                />
+              </div>
+              <div className="flex justify-end space-x-2 pt-2">
+                <button 
+                  onClick={() => setIsComposing(false)}
+                  className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={handleSendNewMessage}
+                  disabled={!composePhone.trim() || !composeText.trim()}
+                  className="px-4 py-2 bg-[#00a884] text-white text-sm font-bold rounded hover:bg-[#008f6f] disabled:opacity-50"
+                >
+                  Enviar
+                </button>
+              </div>
+            </div>
+          </div>
+        </main>
+      ) : selectedChat ? (
         <main className="flex-1 flex flex-col bg-[#efeae2] relative">
           {/* Chat Header */}
           <header className="h-16 bg-[#f0f2f5] border-b border-gray-200 flex items-center px-6 justify-between">
             <div className="flex items-center">
-              <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold">
-                {(selectedChat.contact_name || selectedChat.phone_number).substring(0, 2).toUpperCase()}
+              <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 font-bold overflow-hidden">
+                {selectedChat.profile_pic_url ? (
+                  <img src={selectedChat.profile_pic_url} alt="Profile" className="w-full h-full object-cover" />
+                ) : (
+                  (selectedChat.contact_name || formatPhoneNumber(selectedChat.phone_number)).substring(0, 2).toUpperCase()
+                )}
               </div>
-              <div className="ml-3">
-                <h2 className="text-sm font-bold text-gray-800">{selectedChat.contact_name || selectedChat.phone_number}</h2>
+              <div 
+                className="ml-3 cursor-pointer hover:opacity-80" 
+                onClick={() => {
+                  if (!isContactProfileOpen) fetchContactDetails(selectedChat.phone_number);
+                  setIsContactProfileOpen(!isContactProfileOpen);
+                }}
+              >
+                <h2 className="text-sm font-bold text-gray-800">{selectedChat.contact_name || formatPhoneNumber(selectedChat.phone_number)}</h2>
                 <span className="text-xs text-gray-500 flex items-center">
-                  <span className="w-2 h-2 bg-green-500 rounded-full mr-1.5"></span> {selectedChat.phone_number}
+                  <span className={`w-2 h-2 rounded-full mr-1.5 ${contactDetails && contactDetails.isOnline ? 'bg-green-500' : 'bg-gray-300'}`}></span> 
+                  {contactDetails && contactDetails.isOnline ? 'Online' : 'Offline'} • {formatPhoneNumber(selectedChat.phone_number)}
                 </span>
               </div>
             </div>
@@ -357,12 +501,37 @@ export default function App() {
                        {agents[msg.sender_id]?.split(' ')[0] || 'Atendente'}
                     </div>
                   )}
-                  <p className="text-sm text-gray-800 leading-relaxed break-words whitespace-pre-wrap">{msg.text}</p>
+                  {msg.media_url && (
+                    <div className="mb-2 max-w-[250px] rounded overflow-hidden">
+                      {msg.media_type?.startsWith('image/') ? (
+                        <img 
+                          src={`http://${window.location.hostname}:3001${msg.media_url}`} 
+                          alt="Mídia Recebida" 
+                          className="w-full h-auto object-cover rounded cursor-zoom-in hover:opacity-90 transition-opacity" 
+                          onClick={() => setFullscreenImage(`http://${window.location.hostname}:3001${msg.media_url}`)}
+                        />
+                      ) : msg.media_type?.startsWith('video/') ? (
+                        <video src={`http://${window.location.hostname}:3001${msg.media_url}`} controls className="w-full h-auto rounded" />
+                      ) : msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg' ? (
+                        <div className="min-w-[240px]">
+                          <AudioPlayer src={`http://${window.location.hostname}:3001${msg.media_url}`} />
+                        </div>
+                      ) : (
+                        <a href={`http://${window.location.hostname}:3001${msg.media_url}`} target="_blank" rel="noreferrer" className="text-blue-500 underline text-sm flex items-center">
+                          <Paperclip size={14} className="mr-1" /> Arquivo Anexo
+                        </a>
+                      )}
+                    </div>
+                  )}
+                  {msg.text && <p className="text-sm text-gray-800 leading-relaxed break-words whitespace-pre-wrap">{msg.text}</p>}
                   <div className="flex items-center justify-end gap-1 mt-1">
                     <span className="text-[10px] text-gray-400 block text-right">{formatTime(msg.timestamp)}</span>
                     {!msg.is_incoming && (
-                      <span className="text-blue-500">
-                         {msg.status === 'read' ? <CheckCheck size={14} /> : msg.status === 'delivered' ? <CheckCheck size={14} className="text-gray-400" /> : <Check size={14} className="text-gray-400" />}
+                      <span className="flex items-center">
+                         {msg.status === 'read' ? <CheckCheck size={14} className="text-blue-500" /> : 
+                          msg.status === 'delivered' ? <CheckCheck size={14} className="text-gray-400" /> : 
+                          msg.status === 'sent' ? <Check size={14} className="text-gray-400" /> :
+                          <Clock size={12} className="text-gray-400" />}
                       </span>
                     )}
                   </div>
@@ -414,6 +583,84 @@ export default function App() {
             Selecione uma conversa para começar a atender. Todos os atendentes podem usar esta interface simultaneamente, atribuindo os chats a eles mesmos.
           </p>
         </main>
+      )}
+
+      {/* Profile Sidebar (Far-Right) */}
+      {selectedChat && isContactProfileOpen && (
+        <aside className="w-80 bg-[#f0f2f5] border-l border-gray-200 flex flex-col shadow-xl z-20 overflow-y-auto">
+          <div className="h-16 bg-[#f0f2f5] flex items-center px-6 border-b border-gray-200 shrink-0">
+            <button onClick={() => setIsContactProfileOpen(false)} className="text-gray-600 hover:text-gray-900 mr-4">
+              <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+            <h2 className="font-semibold text-gray-800">Dados do Contato</h2>
+          </div>
+          
+          <div className="bg-white p-6 flex flex-col items-center border-b border-gray-200 mb-2 shadow-sm">
+            <div className="w-48 h-48 rounded-full overflow-hidden mb-4 shadow-md bg-gray-100 flex items-center justify-center">
+              {contactDetails?.profilePicUrl || selectedChat.profile_pic_url ? (
+                <img 
+                  src={contactDetails?.profilePicUrl || selectedChat.profile_pic_url} 
+                  alt="Profile" 
+                  className="w-full h-full object-cover cursor-pointer hover:opacity-90"
+                  onClick={() => setFullscreenImage(contactDetails?.profilePicUrl || selectedChat.profile_pic_url || null)}
+                />
+              ) : (
+                <span className="text-5xl text-gray-400">
+                  {(selectedChat.contact_name || formatPhoneNumber(selectedChat.phone_number)).substring(0, 2).toUpperCase()}
+                </span>
+              )}
+            </div>
+            <h2 className="text-xl font-bold text-gray-900 mb-1">{selectedChat.contact_name || formatPhoneNumber(selectedChat.phone_number)}</h2>
+            
+            <p className="text-gray-600 text-sm font-bold mt-2">
+              Celular: {contactDetails?.number ? `+${contactDetails.number}` : 'Consultando...'}
+            </p>
+            <p className="text-gray-400 text-xs mt-1 bg-gray-100 px-2 py-1 rounded">
+              ID Interno: {selectedChat.phone_number}
+            </p>
+
+            {contactDetails && contactDetails.pushname && contactDetails.pushname !== selectedChat.contact_name && (
+              <p className="text-gray-400 text-xs mt-2">Nome no WhatsApp: ~{contactDetails.pushname}</p>
+            )}
+          </div>
+
+          <div className="bg-white p-5 border-y border-gray-200 mb-2 shadow-sm">
+            <h3 className="text-[#00a884] text-xs font-bold uppercase mb-2">Recado (About)</h3>
+            <p className="text-gray-800 text-sm">{contactDetails?.about || 'Disponível'}</p>
+          </div>
+
+          <div className="bg-white p-5 border-y border-gray-200 shadow-sm flex-1">
+            <h3 className="text-gray-500 text-xs font-bold uppercase mb-4 flex justify-between items-center">
+              Mídias, links e docs
+              <span className="text-blue-500 cursor-pointer">Ver todos</span>
+            </h3>
+            <div className="grid grid-cols-3 gap-2">
+              {messages.filter(m => m.media_url).slice(-6).reverse().map((msg, idx) => (
+                <div key={idx} className="aspect-square bg-gray-100 rounded overflow-hidden cursor-pointer hover:opacity-80 transition-opacity">
+                  {msg.media_type?.startsWith('image/') ? (
+                    <img src={`http://${window.location.hostname}:3001${msg.media_url}`} alt="Media" className="w-full h-full object-cover" onClick={() => setFullscreenImage(`http://${window.location.hostname}:3001${msg.media_url}`)} />
+                  ) : msg.media_type?.startsWith('video/') ? (
+                    <div className="w-full h-full bg-black flex items-center justify-center text-white"><svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" strokeWidth="2" fill="none"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></div>
+                  ) : (
+                     <div className="w-full h-full flex items-center justify-center text-gray-500"><Paperclip size={24} /></div>
+                  )}
+                </div>
+              ))}
+              {messages.filter(m => m.media_url).length === 0 && (
+                <div className="col-span-3 text-center text-gray-400 text-xs py-4">Nenhuma mídia encontrada.</div>
+              )}
+            </div>
+          </div>
+        </aside>
+      )}
+
+      {fullscreenImage && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 cursor-zoom-out"
+          onClick={() => setFullscreenImage(null)}
+        >
+          <img src={fullscreenImage} alt="Fullscreen" className="max-w-full max-h-full object-contain" />
+        </div>
       )}
     </div>
   );

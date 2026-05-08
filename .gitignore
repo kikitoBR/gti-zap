@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# WhatsApp Web Session & Media
+backend/.wwebjs_auth/
+backend/.wwebjs_cache/
+backend/uploads/
