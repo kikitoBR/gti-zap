@@ -30,7 +30,10 @@ const storage = multer.diskStorage({
     cb(null, `avatar_${Date.now()}${extension}`);
   }
 });
-const upload = multer({ storage: storage });
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 } 
+});
 
 app.post('/upload-avatar', upload.single('avatar'), (req, res) => {
   if (!req.file) {
@@ -979,6 +982,17 @@ async function checkInactivity() {
 
 // Executa a cada 5 minutos
 setInterval(checkInactivity, 5 * 60 * 1000);
+
+// Gerenciador de erros para Multer e outros
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'O arquivo é muito grande. O limite é de 5MB.' });
+    }
+    return res.status(400).json({ error: `Erro no upload: ${err.message}` });
+  }
+  next(err);
+});
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, async () => {

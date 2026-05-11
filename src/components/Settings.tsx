@@ -157,9 +157,9 @@ export default function Settings({ user, currentName, chatFontSize, onClose, onP
       return;
     }
 
-    // Validar tamanho (max 2MB)
-    if (file.size > 2 * 1024 * 1024) {
-      showMessage('error', 'A imagem deve ter no máximo 2MB.');
+    // Validar tamanho (max 5MB)
+    if (file.size > 5 * 1024 * 1024) {
+      showMessage('error', 'A imagem deve ter no máximo 5MB.');
       return;
     }
 
