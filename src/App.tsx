@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, MoreVertical, Paperclip, Send, User, Check, CheckCheck, MessageSquare, Users, Settings, LogOut, Lock, Unlock, Plus, Clock, Moon, Sun, Shield, ChevronDown } from 'lucide-react';
+import { Search, MoreVertical, Paperclip, Send, User, Check, CheckCheck, MessageSquare, Users, Settings as SettingsIcon, LogOut, Lock, Unlock, Plus, Clock, Moon, Sun, Shield, ChevronDown, X, FileUp, Image, Headphones, UserPlus, Trash2, Sparkles, Loader2 } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import Login from './Login';
 import AudioPlayer from './components/AudioPlayer';
+import Settings from './components/Settings';
 
 type Message = {
   id: string;
@@ -14,6 +15,7 @@ type Message = {
   is_incoming: boolean;
   media_url?: string;
   media_type?: string;
+  whatsapp_id?: string;
 };
 
 type Chat = {
@@ -37,9 +39,27 @@ type TeamMember = {
   last_seen_at: string | null;
 };
 
+type ChatNote = {
+  id: string;
+  chat_id: string;
+  user_id: string;
+  text: string;
+  created_at: string;
+};
+
+type WhatsAppContact = {
+  id: string;
+  name: string;
+  number: string;
+  pushname: string;
+};
+
 export default function App() {
   const [user, setUser] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'mine' | 'groups' | 'team'>('all');
+  const [showSettings, setShowSettings] = useState(false);
+  const [userSignature, setUserSignature] = useState<string | null>(null);
+  const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState('');
 
@@ -50,16 +70,33 @@ export default function App() {
   const [isContactProfileOpen, setIsContactProfileOpen] = useState(false);
   const [contactDetails, setContactDetails] = useState<any>(null);
 
-  const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
+  const [fullscreenMedia, setFullscreenMedia] = useState<{ url: string; type: string } | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
-  const chatNotesSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [chatNotes, setChatNotes] = useState('');
-  const [isSavingNotes, setIsSavingNotes] = useState(false);
+  const [chatFontSize, setChatFontSize] = useState(() => parseInt(localStorage.getItem('chatFontSize') || '14'));
+  const [chatNotes, setChatNotes] = useState<ChatNote[]>([]);
+  const [newNoteText, setNewNoteText] = useState('');
+  const [isSavingNote, setIsSavingNote] = useState(false);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [sendingMedia, setSendingMedia] = useState(false);
+  const [contactPickerOpen, setContactPickerOpen] = useState(false);
+  const [whatsappContacts, setWhatsappContacts] = useState<WhatsAppContact[]>([]);
+  const [contactSearch, setContactSearch] = useState('');
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
+  const [loadingAI, setLoadingAI] = useState(false);
+  const [showAiPanel, setShowAiPanel] = useState(false);
+  const attachFileRef = useRef<HTMLInputElement>(null);
+  const attachImageRef = useRef<HTMLInputElement>(null);
+  const attachAudioRef = useRef<HTMLInputElement>(null);
 
   // Persistir tema
   useEffect(() => {
     localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
+
+  useEffect(() => {
+    localStorage.setItem('chatFontSize', String(chatFontSize));
+  }, [chatFontSize]);
 
   const [chats, setChats] = useState<Chat[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -101,9 +138,10 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chats' }, payload => {
         handleChatChange(payload);
       })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
-        handleNewMessage(payload.new as Message);
-      })
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
+          console.log('[Realtime] Nova mensagem detectada:', payload.new);
+          handleNewMessage(payload.new as Message);
+        })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, payload => {
         const updatedUser = payload.new as TeamMember;
         if (updatedUser && updatedUser.id && updatedUser.name) {
@@ -128,7 +166,7 @@ export default function App() {
 
   const fetchInitialData = async () => {
     // Busca Agentes completos (com role e presença)
-    const { data: usersData } = await supabase.from('users').select('id, name, email, role, status, last_seen_at');
+    const { data: usersData } = await supabase.from('users').select('id, name, email, role, status, last_seen_at, signature, avatar_url');
     if (usersData) {
       const agentsMap: Record<string, string> = {};
       usersData.forEach(u => agentsMap[u.id] = u.name);
@@ -138,6 +176,10 @@ export default function App() {
       // Define a role do usuário logado
       const currentUser = usersData.find(u => u.id === user.id);
       if (currentUser?.role) setUserRole(currentUser.role as 'admin' | 'atendente');
+      if (currentUser) {
+        setUserSignature((currentUser as any).signature || null);
+        setUserAvatar((currentUser as any).avatar_url || null);
+      }
     }
 
     // Busca Chats
@@ -155,37 +197,66 @@ export default function App() {
         const chat = chats.find(c => c.id === selectedChatId);
         if (chat) {
           fetchContactDetails(chat.phone_number);
-          setChatNotes(chat.notes || '');
         }
-      } else {
-        const chat = chats.find(c => c.id === selectedChatId);
-        if (chat) setChatNotes(chat.notes || '');
       }
+      // Fetch structured notes
+      fetchChatNotes(selectedChatId);
     } else {
       setMessages([]);
       setIsContactProfileOpen(false);
-      setChatNotes('');
+      setChatNotes([]);
+      setNewNoteText('');
     }
   }, [selectedChatId]);
 
-  const saveNotes = async () => {
-    if (!selectedChatId) return;
-    setIsSavingNotes(true);
+  const fetchChatNotes = async (chatId: string) => {
+    const { data } = await supabase
+      .from('chat_notes')
+      .select('*')
+      .eq('chat_id', chatId)
+      .order('created_at', { ascending: false });
+    if (data) setChatNotes(data);
+  };
+
+  const addNote = async () => {
+    if (!selectedChatId || !newNoteText.trim()) return;
+    setIsSavingNote(true);
     try {
       const { error } = await supabase
-        .from('chats')
-        .update({ notes: chatNotes })
-        .eq('id', selectedChatId);
-      
+        .from('chat_notes')
+        .insert([{
+          chat_id: selectedChatId,
+          user_id: user.id,
+          text: newNoteText.trim()
+        }]);
       if (error) throw error;
-      
-      // Atualiza o estado local do chat
-      setChats(prev => prev.map(c => c.id === selectedChatId ? { ...c, notes: chatNotes } : c));
+      setNewNoteText('');
+      await fetchChatNotes(selectedChatId);
     } catch (err) {
-      console.error('Erro ao salvar anotações:', err);
-      alert('Aviso: Certifique-se de que a coluna "notes" existe na tabela "chats" no seu banco de dados Supabase.');
+      console.error('Erro ao salvar anotação:', err);
+      alert('Erro ao salvar. Verifique se a tabela chat_notes existe no Supabase (execute migration_notes.sql).');
     } finally {
-      setIsSavingNotes(false);
+      setIsSavingNote(false);
+    }
+  };
+
+  const deleteNote = async (noteId: string) => {
+    try {
+      let query = supabase
+        .from('chat_notes')
+        .delete()
+        .eq('id', noteId);
+
+      // Admins podem apagar qualquer anotação; atendentes só suas próprias
+      if (userRole !== 'admin') {
+        query = query.eq('user_id', user.id);
+      }
+
+      const { error } = await query;
+      if (error) throw error;
+      setChatNotes(prev => prev.filter(n => n.id !== noteId));
+    } catch (err) {
+      console.error('Erro ao deletar anotação:', err);
     }
   };
 
@@ -224,20 +295,23 @@ export default function App() {
   };
 
   const handleNewMessage = (newMsg: Message) => {
-    // If we are viewing this chat, add to messages array
-    setMessages(prev => {
-      if (prev.length > 0 && prev[0].chat_id !== newMsg.chat_id) return prev; // Not for this chat
-      // Check if not already added (optimistic UI check could be done, but simple push here)
-      if (prev.find(m => m.id === newMsg.id)) return prev;
-      return [...prev, newMsg];
-    });
+    // Só adiciona à tela se for para o chat que está aberto no momento
+    if (newMsg.chat_id === selectedChatId) {
+      setMessages(prev => {
+        // Evita duplicados (checa se o ID da mensagem já existe na lista atual)
+        if (prev.find(m => m.id === newMsg.id)) return prev;
+        return [...prev, newMsg];
+      });
+    } else {
+      console.log(`[Realtime] Mensagem ignorada (Chat ${newMsg.chat_id} não é o selecionado ${selectedChatId})`);
+    }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || !selectedChat) return;
 
-    const currentUserName = agents[user.id] || user.email.split('@')[0] || 'Atendente';
+    const currentUserName = userSignature || agents[user.id] || user.email.split('@')[0] || 'Atendente';
     const text = `*${currentUserName}*\n\n${newMessage.trim()}`;
     setNewMessage('');
 
@@ -261,7 +335,7 @@ export default function App() {
   const handleSendNewMessage = async () => {
     if (!composePhone.trim() || !composeText.trim()) return;
 
-    const currentUserName = agents[user.id] || user.email.split('@')[0] || 'Atendente';
+    const currentUserName = userSignature || agents[user.id] || user.email.split('@')[0] || 'Atendente';
     const text = `*${currentUserName}*\n\n${composeText.trim()}`;
 
     try {
@@ -294,23 +368,139 @@ export default function App() {
 
   const handleAssignToMe = async () => {
     if (!selectedChatId || !user) return;
-    await supabase.from('chats').update({ assigned_to: user.id }).eq('id', selectedChatId);
+    await supabase.from('chats').update({
+      assigned_to: user.id,
+      updated_at: new Date().toISOString()
+    }).eq('id', selectedChatId);
   };
 
   const handleFreeAssignment = async () => {
     if (!selectedChatId) return;
-    await supabase.from('chats').update({ assigned_to: null }).eq('id', selectedChatId);
+    await supabase.from('chats').update({
+      assigned_to: null,
+      updated_at: new Date().toISOString()
+    }).eq('id', selectedChatId);
   };
 
   const handleAssignToAgent = async (agentId: string) => {
     if (!selectedChatId) return;
-    await supabase.from('chats').update({ assigned_to: agentId || null }).eq('id', selectedChatId);
+    await supabase.from('chats').update({
+      assigned_to: agentId || null,
+      updated_at: new Date().toISOString()
+    }).eq('id', selectedChatId);
     setAssignDropdownOpen(false);
   };
 
   const handleLogout = async () => {
     await supabase.from('users').update({ status: 'offline', last_seen_at: null }).eq('id', user.id);
     await supabase.auth.signOut();
+  };
+
+  const handleSendMedia = async (file: File) => {
+    if (!selectedChat) return;
+    setSendingMedia(true);
+    setAttachMenuOpen(false);
+
+    const currentUserName = userSignature || agents[user.id] || user.email.split('@')[0] || 'Atendente';
+    const caption = `*${currentUserName}*`;
+
+    const formData = new FormData();
+    formData.append('media', file);
+    formData.append('chatId', selectedChat.id);
+    formData.append('phoneNumber', selectedChat.phone_number);
+    formData.append('agentId', user.id);
+    formData.append('caption', caption);
+
+    try {
+      const res = await fetch(`http://${window.location.hostname}:3001/send-media`, {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (!data.success) {
+        alert('Erro ao enviar mídia: ' + (data.error || 'Erro desconhecido'));
+      }
+    } catch (err) {
+      console.error('Erro ao enviar mídia:', err);
+      alert('Erro ao enviar mídia.');
+    } finally {
+      setSendingMedia(false);
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleSendMedia(file);
+    e.target.value = ''; // reset
+  };
+
+  const openContactPicker = async () => {
+    setAttachMenuOpen(false);
+    setContactPickerOpen(true);
+    setContactSearch('');
+    setLoadingContacts(true);
+    try {
+      const res = await fetch(`http://${window.location.hostname}:3001/contacts`);
+      const data = await res.json();
+      setWhatsappContacts(data);
+    } catch (err) {
+      console.error('Erro ao carregar contatos:', err);
+    } finally {
+      setLoadingContacts(false);
+    }
+  };
+
+  const sendContact = async (contact: WhatsAppContact) => {
+    if (!selectedChat) return;
+    setContactPickerOpen(false);
+    try {
+      await fetch(`http://${window.location.hostname}:3001/send-contact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatId: selectedChat.id,
+          phoneNumber: selectedChat.phone_number,
+          agentId: user.id,
+          contactId: contact.id
+        })
+      });
+    } catch (err) {
+      console.error('Erro ao enviar contato:', err);
+      alert('Erro ao enviar contato.');
+    }
+  };
+
+  const fetchAiSuggestions = async () => {
+    if (!selectedChat || messages.length === 0) return;
+    setLoadingAI(true);
+    setShowAiPanel(true);
+    setAiSuggestions([]);
+    try {
+      const recentMessages = messages.slice(-15).map(m => {
+        let text = m.text || '';
+        // Remove [META] tags para enviar texto limpo
+        const metaMatch = text.match(/^\[META\](.*?)\[\/META\]\n?(.*)/s);
+        if (metaMatch) text = metaMatch[2];
+        return { text, is_incoming: m.is_incoming };
+      }).filter(m => m.text.trim());
+
+      const res = await fetch(`http://${window.location.hostname}:3001/ai-suggest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: recentMessages,
+          contactName: selectedChat.contact_name
+        })
+      });
+      const data = await res.json();
+      setAiSuggestions(data.suggestions || []);
+    } catch (err) {
+      console.error('Erro ao buscar sugestões de IA:', err);
+      setAiSuggestions(['A IA está demorando a responder. Tente novamente em instantes.']);
+      setLoadingAI(false);
+    } finally {
+      setLoadingAI(false);
+    }
   };
 
   const getTeamMemberStatus = (member: TeamMember): { label: string; color: string } => {
@@ -322,6 +512,19 @@ export default function App() {
     const hasAssignments = chats.some(c => c.assigned_to === member.id);
     if (hasAssignments) return { label: 'Ocupado', color: 'bg-yellow-500' };
     return { label: 'Disponível', color: 'bg-green-500' };
+  };
+
+  const scrollToMessage = (whatsappId: string) => {
+    if (!whatsappId) return;
+    const element = document.getElementById(`msg-${whatsappId}`);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Adiciona um efeito visual temporário de destaque
+      element.classList.add('ring-4', 'ring-[#00a884]', 'ring-opacity-50', 'bg-yellow-50', 'dark:bg-yellow-900/20');
+      setTimeout(() => {
+        element.classList.remove('ring-4', 'ring-[#00a884]', 'ring-opacity-50', 'bg-yellow-50', 'dark:bg-yellow-900/20');
+      }, 2000);
+    }
   };
 
   if (!user) {
@@ -361,44 +564,55 @@ export default function App() {
 
       {/* Sidebar - Menu (Left) */}
       <div className="w-16 bg-[#111b21] flex flex-col items-center py-4 space-y-6">
-        <div className="w-10 h-10 bg-[#00a884] rounded-full flex items-center justify-center text-white font-bold text-sm">
-          WH
+        <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center overflow-hidden">
+          <img src="/gti-logo.png" alt="GTI" className="w-full h-full object-contain p-0.1" />
         </div>
         <nav className="flex-1 flex flex-col space-y-4 items-center w-full px-2">
           <button
-            onClick={() => { if (activeTab === 'groups' || activeTab === 'team') setActiveTab('all'); }}
-            className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${activeTab !== 'groups' && activeTab !== 'team' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
+            onClick={() => { if (activeTab === 'groups' || activeTab === 'team') setActiveTab('all'); setShowSettings(false); }}
+            className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${!showSettings && activeTab !== 'groups' && activeTab !== 'team' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
             title="Conversas"
           >
             <MessageSquare size={24} />
           </button>
           <button
-            onClick={() => setActiveTab('groups')}
-            className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${activeTab === 'groups' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
+            onClick={() => { setActiveTab('groups'); setShowSettings(false); }}
+            className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${!showSettings && activeTab === 'groups' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
             title="Grupos"
           >
             <Users size={24} />
           </button>
           {userRole === 'admin' && (
             <button
-              onClick={() => setActiveTab('team')}
-              className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${activeTab === 'team' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
+              onClick={() => { setActiveTab('team'); setShowSettings(false); }}
+              className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${!showSettings && activeTab === 'team' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
               title="Equipe"
             >
               <Shield size={24} />
             </button>
           )}
-          <button className="w-full p-2 flex justify-center rounded-lg text-gray-400 hover:bg-[#2a3942] hover:text-white transition-colors" title="Configurações">
-            <Settings size={24} />
+          <button
+            onClick={() => { setShowSettings(true); setSelectedChatId(null); setIsComposing(false); }}
+            className={`w-full p-2 flex justify-center rounded-lg transition-colors ${showSettings ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
+            title="Configurações"
+          >
+            <SettingsIcon size={24} />
           </button>
         </nav>
         <div className="mt-auto flex flex-col gap-4 items-center">
           <button onClick={() => setIsDarkMode(!isDarkMode)} className="p-2 text-gray-400 hover:text-white transition-colors" title="Alternar Tema">
             {isDarkMode ? <Sun size={24} /> : <Moon size={24} />}
           </button>
-          <div className="w-8 h-8 rounded-full bg-gray-600 border border-gray-400 flex flex-col items-center justify-center text-white cursor-pointer group relative">
-            <User size={18} />
-            <div className="absolute left-10 bg-black text-white text-xs px-2 py-1 rounded hidden group-hover:block whitespace-nowrap z-50">
+          <div
+            className="w-10 h-10 rounded-full bg-gray-600 border border-gray-400 flex flex-col items-center justify-center text-white cursor-pointer group relative overflow-hidden"
+            onClick={() => { setShowSettings(true); setSelectedChatId(null); setIsComposing(false); }}
+          >
+            {userAvatar ? (
+              <img src={userAvatar} alt="Avatar" className="w-full h-full object-cover" />
+            ) : (
+              <User size={20} />
+            )}
+            <div className="absolute left-12 bg-black text-white text-xs px-2 py-1 rounded hidden group-hover:block whitespace-nowrap z-50">
               {agents[user.id] || user.email}
             </div>
           </div>
@@ -463,10 +677,9 @@ export default function App() {
                         </div>
                         <div className="flex items-center gap-1.5">
                           <span className={`w-1.5 h-1.5 rounded-full ${memberStatus.color}`}></span>
-                          <span className={`text-[11px] ${
-                            memberStatus.label === 'Disponível' ? 'text-green-600' :
+                          <span className={`text-[11px] ${memberStatus.label === 'Disponível' ? 'text-green-600' :
                             memberStatus.label === 'Ocupado' ? 'text-yellow-600' : 'text-gray-400'
-                          } font-medium`}>{memberStatus.label}</span>
+                            } font-medium`}>{memberStatus.label}</span>
                           {memberChats.length > 0 && (
                             <span className="text-[10px] text-gray-400">· {memberChats.length} chat{memberChats.length > 1 ? 's' : ''}</span>
                           )}
@@ -577,36 +790,45 @@ export default function App() {
       </div>
 
       {/* Main Chat Area (Right) */}
-      {isComposing ? (
-        <main className="flex-1 flex flex-col items-center justify-center bg-[#f0f2f5] px-10 border-b-8 border-[#00a884]">
-          <div className="bg-white p-8 rounded-lg shadow-sm w-full max-w-md border-t-4 border-[#00a884]">
-            <h2 className="text-xl font-bold text-gray-800 mb-4">Nova Conversa</h2>
+      {showSettings ? (
+        <Settings
+          user={user}
+          currentName={agents[user.id] || user.email}
+          chatFontSize={chatFontSize}
+          onClose={() => setShowSettings(false)}
+          onProfileUpdated={() => fetchInitialData()}
+          onFontSizeChange={(size) => setChatFontSize(size)}
+        />
+      ) : isComposing ? (
+        <main className="flex-1 flex flex-col items-center justify-center bg-[#f0f2f5] dark:bg-[#0b141a] px-10 border-b-8 border-[#00a884]">
+          <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-sm w-full max-w-md border-t-4 border-[#00a884]">
+            <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100 mb-4">Nova Conversa</h2>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Número do WhatsApp</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Número do WhatsApp</label>
                 <input
                   type="text"
                   placeholder="Ex: 5511999999999"
                   value={composePhone}
                   onChange={e => setComposePhone(e.target.value)}
-                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-[#00a884] outline-none"
+                  className="w-full bg-white dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-[#00a884] outline-none"
                 />
-                <p className="text-xs text-gray-500 mt-1">Digite apenas números, incluindo DDI e DDD (ex: 55 para Brasil).</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Digite apenas números, incluindo DDI e DDD (ex: 55 para Brasil).</p>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Mensagem Inicial</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Mensagem Inicial</label>
                 <textarea
                   rows={4}
                   placeholder="Olá! Como podemos ajudar?"
                   value={composeText}
                   onChange={e => setComposeText(e.target.value)}
-                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-[#00a884] outline-none resize-none"
+                  className="w-full bg-white dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-[#00a884] outline-none resize-none"
                 />
               </div>
               <div className="flex justify-end space-x-2 pt-2">
                 <button
                   onClick={() => setIsComposing(false)}
-                  className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800"
+                  className="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"
                 >
                   Cancelar
                 </button>
@@ -667,64 +889,67 @@ export default function App() {
                     </span>
                   </div>
 
-                  {/* Admin: Dropdown para atribuir a qualquer membro */}
+                  {/* Admin: Botões de Atribuição */}
                   {userRole === 'admin' && (
-                    <div className="relative">
-                      <button
-                        onClick={() => setAssignDropdownOpen(!assignDropdownOpen)}
-                        className="px-3 py-1.5 bg-[#00a884] text-white text-xs font-bold rounded hover:bg-[#008f6f] shadow-sm ml-2 flex items-center gap-1"
-                      >
-                        Atribuir <ChevronDown size={12} />
-                      </button>
-                      {assignDropdownOpen && (
-                        <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
-                          <div className="p-2 border-b border-gray-100 dark:border-gray-700">
-                            <span className="text-[10px] text-gray-400 uppercase font-bold">Atribuir a...</span>
-                          </div>
-                          <div className="max-h-48 overflow-y-auto">
-                            {/* Opção de liberar */}
-                            {selectedChat.assigned_to && (
-                              <button
-                                onClick={() => handleAssignToAgent('')}
-                                className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-left border-b border-gray-100 dark:border-gray-700"
-                              >
-                                <Unlock size={14} className="text-gray-400" />
-                                <span className="text-xs text-red-500 font-medium">Liberar Chat</span>
-                              </button>
-                            )}
-                            {teamMembers.map(member => {
-                              const memberStatus = getTeamMemberStatus(member);
-                              const isCurrentAssignee = selectedChat.assigned_to === member.id;
-                              return (
-                                <button
-                                  key={member.id}
-                                  onClick={() => handleAssignToAgent(member.id)}
-                                  disabled={isCurrentAssignee}
-                                  className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-left ${isCurrentAssignee ? 'opacity-50 cursor-default bg-gray-50 dark:bg-gray-700' : ''}`}
-                                >
-                                  <div className="relative">
-                                    <div className="w-6 h-6 bg-gray-200 dark:bg-gray-600 rounded-full flex items-center justify-center text-gray-500">
-                                      <User size={12} />
-                                    </div>
-                                    <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 ${memberStatus.color} rounded-full border border-white dark:border-gray-800`}></span>
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <span className="text-xs font-medium text-gray-800 dark:text-gray-200 truncate block">
-                                      {member.name}{member.id === user.id ? ' (Você)' : ''}
-                                    </span>
-                                    <span className={`text-[10px] ${memberStatus.label === 'Disponível' ? 'text-green-500' : memberStatus.label === 'Ocupado' ? 'text-yellow-500' : 'text-gray-400'}`}>
-                                      {memberStatus.label}
-                                    </span>
-                                  </div>
-                                  {isCurrentAssignee && (
-                                    <Check size={12} className="text-[#00a884]" />
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
+                    <div className="flex items-center gap-2 ml-2">
+                      {/* Botão Soltar (visível se alguém estiver atribuído) */}
+                      {selectedChat.assigned_to && (
+                        <button
+                          onClick={handleFreeAssignment}
+                          className="px-3 py-1.5 bg-rose-50 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 text-xs font-bold rounded border border-rose-200 dark:border-rose-800 hover:bg-rose-100 dark:hover:bg-rose-900/50 shadow-sm flex items-center gap-1 transition-colors"
+                        >
+                          <Unlock size={14} /> Soltar
+                        </button>
                       )}
+
+                      {/* Botão Atribuir (Dropdown) */}
+                      <div className="relative">
+                        <button
+                          onClick={() => setAssignDropdownOpen(!assignDropdownOpen)}
+                          className={`px-3 py-1.5 ${selectedChat.assigned_to === user.id ? 'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700' : 'bg-[#00a884] text-white hover:bg-[#008f6f]'} text-xs font-bold rounded shadow-sm flex items-center gap-1 transition-colors`}
+                        >
+                          {selectedChat.assigned_to === user.id ? 'Reatribuir' : 'Atribuir'} <ChevronDown size={12} />
+                        </button>
+                        {assignDropdownOpen && (
+                          <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
+                            <div className="p-2 border-b border-gray-100 dark:border-gray-700">
+                              <span className="text-[10px] text-gray-400 uppercase font-bold">Atribuir a...</span>
+                            </div>
+                            <div className="max-h-48 overflow-y-auto">
+                              {teamMembers.map(member => {
+                                const memberStatus = getTeamMemberStatus(member);
+                                const isCurrentAssignee = selectedChat.assigned_to === member.id;
+                                return (
+                                  <button
+                                    key={member.id}
+                                    onClick={() => handleAssignToAgent(member.id)}
+                                    disabled={isCurrentAssignee}
+                                    className={`w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 text-left ${isCurrentAssignee ? 'opacity-50 cursor-default bg-gray-50 dark:bg-gray-700' : ''}`}
+                                  >
+                                    <div className="relative">
+                                      <div className="w-6 h-6 bg-gray-200 dark:bg-gray-600 rounded-full flex items-center justify-center text-gray-500">
+                                        <User size={12} />
+                                      </div>
+                                      <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 ${memberStatus.color} rounded-full border border-white dark:border-gray-800`}></span>
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <span className="text-xs font-medium text-gray-800 dark:text-gray-200 truncate block">
+                                        {member.name}{member.id === user.id ? ' (Você)' : ''}
+                                      </span>
+                                      <span className={`text-[10px] ${memberStatus.label === 'Disponível' ? 'text-green-500' : memberStatus.label === 'Ocupado' ? 'text-yellow-500' : 'text-gray-400'}`}>
+                                        {memberStatus.label}
+                                      </span>
+                                    </div>
+                                    {isCurrentAssignee && (
+                                      <Check size={12} className="text-[#00a884]" />
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -777,16 +1002,26 @@ export default function App() {
             {messages.map(msg => {
               let textToRender = msg.text || '';
               let msgMeta: any = null;
-              const metaMatch = textToRender.match(/^\[META\](.*?)\[\/META\]\n?(.*)/s);
+              let replyMeta: any = null;
+
+              // Extrair metadados do remetente ([META]) - Busca em qualquer lugar e remove
+              const metaMatch = textToRender.match(/\[META\](.*?)\[\/META\]\n?/);
               if (metaMatch) {
                 try { msgMeta = JSON.parse(metaMatch[1]); } catch (e) { }
-                textToRender = metaMatch[2];
+                textToRender = textToRender.replace(metaMatch[0], '');
+              }
+
+              // Extrair metadados da resposta ([REPLY]) - Busca em qualquer lugar e remove
+              const replyMatch = textToRender.match(/\[REPLY\](.*?)\[\/REPLY\]\n?/);
+              if (replyMatch) {
+                try { replyMeta = JSON.parse(replyMatch[1]); } catch (e) { }
+                textToRender = textToRender.replace(replyMatch[0], '');
               }
 
               return (
-                <div key={msg.id} className={`flex max-w-[85%] gap-2 ${msg.is_incoming ? 'self-start items-start' : 'self-end'}`}>
+                <div key={msg.id} id={`msg-${msg.whatsapp_id}`} className={`flex max-w-[75%] gap-2 ${msg.is_incoming ? 'self-start items-start' : 'self-end'}`}>
                   {msg.is_incoming && selectedChat.phone_number.includes('@g.us') && (
-                    <div 
+                    <div
                       className="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex-shrink-0 flex items-center justify-center overflow-hidden shadow-sm border border-gray-300 dark:border-gray-600 mt-1 cursor-pointer hover:opacity-80 transition-opacity"
                       onClick={() => {
                         if (msgMeta?.number) {
@@ -798,10 +1033,10 @@ export default function App() {
                       {msgMeta?.pic ? <img src={msgMeta.pic} className="w-full h-full object-cover" /> : <User size={16} className="text-gray-500" />}
                     </div>
                   )}
-                <div className={`${(msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg') ? 'pt-1.5 px-2 pb-1' : 'p-3'} rounded-lg shadow-sm relative ${msg.is_incoming ? 'bg-white dark:bg-[#202c33] rounded-tl-none' : 'bg-[#dcf8c6] dark:bg-[#005c4b] rounded-tr-none'}`}>
+                  <div className={`${(msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg') ? 'pt-1.5 px-2 pb-1' : 'p-3'} rounded-lg shadow-sm relative overflow-hidden break-words ${msg.is_incoming ? 'bg-white dark:bg-[#202c33] rounded-tl-none' : 'bg-[#dcf8c6] dark:bg-[#005c4b] rounded-tr-none'}`}>
                     {/* Nome do Remetente em Grupos (Incoming) */}
                     {msg.is_incoming && selectedChat.phone_number.includes('@g.us') && msgMeta && (
-                      <div 
+                      <div
                         className="text-[12px] font-bold mb-1 text-[#00a884] dark:text-[#06cf9c] truncate max-w-[240px] cursor-pointer hover:underline"
                         onClick={() => {
                           if (msgMeta?.number) {
@@ -813,7 +1048,33 @@ export default function App() {
                         {msgMeta.name || (msgMeta.pushname ? `${msgMeta.pushname} (${formatPhoneNumber(msgMeta.number)})` : formatPhoneNumber(msgMeta.number))}
                       </div>
                     )}
-                    
+
+                    {/* BLOC DE RESPOSTA (REPLY) - SEMPRE NO TOPO DO BALÃO */}
+                    {replyMeta && (
+                      <div 
+                        onClick={() => replyMeta.whatsappId && scrollToMessage(replyMeta.whatsappId)}
+                        className="bg-gray-100/60 dark:bg-black/20 border-l-4 border-[#00a884] rounded p-2 mb-2 text-xs cursor-pointer hover:bg-gray-200/60 dark:hover:bg-black/30 transition-colors border-opacity-70 flex justify-between gap-2 overflow-hidden"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-[#00a884] dark:text-[#06cf9c] mb-0.5 truncate">
+                            {replyMeta.isMe ? 'Você' : replyMeta.author}
+                          </div>
+                          <div className="text-gray-600 dark:text-gray-300 line-clamp-2 italic leading-tight">
+                            {replyMeta.body}
+                          </div>
+                        </div>
+                        {replyMeta.mediaUrl && (
+                          <div className="w-10 h-10 bg-gray-200 dark:bg-gray-800 rounded flex-shrink-0 overflow-hidden">
+                            <img 
+                              src={`http://${window.location.hostname}:3001${replyMeta.mediaUrl}`} 
+                              alt="thumb" 
+                              className="w-full h-full object-cover opacity-80" 
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {!msg.is_incoming && msg.sender_id !== 'client' && msg.sender_id !== 'agent' && (
                       <div className="text-[10px] text-gray-500 dark:text-gray-400 font-bold mb-1 uppercase">
                         {agents[msg.sender_id]?.split(' ')[0] || 'Atendente'}
@@ -826,7 +1087,7 @@ export default function App() {
                             src={`http://${window.location.hostname}:3001${msg.media_url}`}
                             alt="Mídia Recebida"
                             className="w-full h-auto object-cover rounded cursor-zoom-in hover:opacity-90 transition-opacity"
-                            onClick={() => setFullscreenImage(`http://${window.location.hostname}:3001${msg.media_url}`)}
+                            onClick={() => setFullscreenMedia({ url: `http://${window.location.hostname}:3001${msg.media_url}`, type: msg.media_type || 'image/jpeg' })}
                           />
                         ) : msg.media_type?.startsWith('video/') ? (
                           <video src={`http://${window.location.hostname}:3001${msg.media_url}`} controls className="w-full h-auto rounded" />
@@ -854,17 +1115,17 @@ export default function App() {
                       </div>
                     )}
                     {textToRender && (
-                      <p className="text-sm text-gray-800 dark:text-gray-100 leading-relaxed break-words whitespace-pre-wrap">
+                      <p className="text-gray-800 dark:text-gray-100 leading-relaxed break-words whitespace-pre-wrap" style={{ fontSize: `${chatFontSize}px` }}>
                         {textToRender.replace(/^~.*:\n/, '')}
                         {!(msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg') && (
                           <span className="float-right flex items-center gap-1 ml-2 mt-2 select-none">
                             <span className="text-xs text-gray-400">{formatTime(msg.timestamp)}</span>
                             {!msg.is_incoming && (
                               <span className="flex items-center">
-                                {msg.status === 'read' ? <CheckCheck size={14} className="text-blue-500" /> : 
-                                 msg.status === 'delivered' ? <CheckCheck size={14} className="text-gray-400" /> : 
-                                 msg.status === 'sent' ? <Check size={14} className="text-gray-400" /> :
-                                 <Clock size={12} className="text-gray-400" />}
+                                {msg.status === 'read' ? <CheckCheck size={14} className="text-blue-500" /> :
+                                  msg.status === 'delivered' ? <CheckCheck size={14} className="text-gray-400" /> :
+                                    msg.status === 'sent' ? <Check size={14} className="text-gray-400" /> :
+                                      <Clock size={12} className="text-gray-400" />}
                               </span>
                             )}
                           </span>
@@ -877,10 +1138,10 @@ export default function App() {
                         <span className="text-xs text-gray-400 block text-right">{formatTime(msg.timestamp)}</span>
                         {!msg.is_incoming && (
                           <span className="flex items-center">
-                            {msg.status === 'read' ? <CheckCheck size={14} className="text-blue-500" /> : 
-                             msg.status === 'delivered' ? <CheckCheck size={14} className="text-gray-400" /> : 
-                             msg.status === 'sent' ? <Check size={14} className="text-gray-400" /> :
-                             <Clock size={12} className="text-gray-400" />}
+                            {msg.status === 'read' ? <CheckCheck size={14} className="text-blue-500" /> :
+                              msg.status === 'delivered' ? <CheckCheck size={14} className="text-gray-400" /> :
+                                msg.status === 'sent' ? <Check size={14} className="text-gray-400" /> :
+                                  <Clock size={12} className="text-gray-400" />}
                           </span>
                         )}
                       </div>
@@ -900,9 +1161,109 @@ export default function App() {
             </footer>
           ) : (
             <footer className="bg-[#f0f2f5] dark:bg-gray-800 p-3 border-t border-gray-200 dark:border-gray-700">
+              {/* Hidden file inputs */}
+              <input type="file" ref={attachFileRef} onChange={handleFileInputChange} className="hidden" />
+              <input type="file" ref={attachImageRef} onChange={handleFileInputChange} accept="image/*,video/*" className="hidden" />
+              <input type="file" ref={attachAudioRef} onChange={handleFileInputChange} accept="audio/*" className="hidden" />
+
+              {sendingMedia && (
+                <div className="flex items-center gap-2 mb-2 px-2">
+                  <div className="w-4 h-4 border-2 border-[#00a884] border-t-transparent rounded-full animate-spin"></div>
+                  <span className="text-xs text-gray-500">Enviando arquivo...</span>
+                </div>
+              )}
+
+              {/* Painel de Sugestões de IA */}
+              {showAiPanel && (
+                <div className="mb-2 mx-1 bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-900/20 dark:to-blue-900/20 rounded-xl border border-purple-200/50 dark:border-purple-700/30 p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-1.5">
+                      <Sparkles size={14} className="text-purple-500" />
+                      <span className="text-xs font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wider">Sugestões da IA</span>
+                    </div>
+                    <button
+                      onClick={() => { setShowAiPanel(false); setAiSuggestions([]); }}
+                      className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  {loadingAI ? (
+                    <div className="flex items-center gap-2 py-3 justify-center">
+                      <Loader2 size={16} className="text-purple-500 animate-spin" />
+                      <span className="text-xs text-purple-500">Analisando conversa...</span>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1.5">
+                      {aiSuggestions.map((suggestion, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => {
+                            setNewMessage(suggestion);
+                            setShowAiPanel(false);
+                            setAiSuggestions([]);
+                          }}
+                          className="text-left text-sm text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 hover:bg-purple-100 dark:hover:bg-purple-900/30 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 transition-all hover:border-purple-300 dark:hover:border-purple-600 hover:shadow-sm group"
+                        >
+                          <span className="text-purple-400 text-xs font-bold mr-1.5">{idx + 1}.</span>
+                          {suggestion}
+                          <span className="text-[10px] text-gray-400 group-hover:text-purple-500 ml-1 transition-colors">↵ usar</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="flex items-center space-x-3">
-                <button className="text-gray-500 hover:text-gray-700">
-                  <Paperclip size={24} />
+                <div className="relative">
+                  <button
+                    onClick={() => setAttachMenuOpen(!attachMenuOpen)}
+                    className={`text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors ${attachMenuOpen ? 'text-[#00a884]' : ''}`}
+                  >
+                    {attachMenuOpen ? <X size={24} /> : <Paperclip size={24} />}
+                  </button>
+
+                  {attachMenuOpen && (
+                    <div className="absolute bottom-12 left-0 bg-white dark:bg-[#233138] rounded-xl shadow-2xl border border-gray-200 dark:border-gray-600 py-2 w-48 z-50 animate-in">
+                      <button
+                        onClick={() => { setAttachMenuOpen(false); attachFileRef.current?.click(); }}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
+                      >
+                        <span className="w-8 h-8 rounded-full bg-purple-500 flex items-center justify-center"><FileUp size={16} className="text-white" /></span>
+                        Documento
+                      </button>
+                      <button
+                        onClick={() => { setAttachMenuOpen(false); attachImageRef.current?.click(); }}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
+                      >
+                        <span className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center"><Image size={16} className="text-white" /></span>
+                        Fotos e vídeos
+                      </button>
+                      <button
+                        onClick={() => { setAttachMenuOpen(false); attachAudioRef.current?.click(); }}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
+                      >
+                        <span className="w-8 h-8 rounded-full bg-orange-500 flex items-center justify-center"><Headphones size={16} className="text-white" /></span>
+                        Áudio
+                      </button>
+                      <button
+                        onClick={openContactPicker}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
+                      >
+                        <span className="w-8 h-8 rounded-full bg-teal-500 flex items-center justify-center"><UserPlus size={16} className="text-white" /></span>
+                        Contato
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={fetchAiSuggestions}
+                  disabled={loadingAI || messages.length === 0}
+                  className={`p-1.5 rounded-lg transition-all ${loadingAI ? 'text-purple-400 animate-pulse' : 'text-gray-400 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-900/20'} disabled:opacity-30`}
+                  title="Sugestões de IA"
+                >
+                  <Sparkles size={20} />
                 </button>
                 <form onSubmit={handleSendMessage} className="flex-1 flex">
                   <input
@@ -910,7 +1271,7 @@ export default function App() {
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
                     placeholder="Digite uma mensagem..."
-                    className="flex-1 bg-white border-none rounded-lg px-4 py-2 text-sm ring-1 ring-gray-200 outline-none focus:ring-1 focus:ring-[#00a884]"
+                    className="flex-1 bg-white dark:bg-[#2a3942] text-gray-900 dark:text-gray-100 border-none rounded-lg px-4 py-2 text-sm ring-1 ring-gray-200 dark:ring-gray-700 outline-none focus:ring-1 focus:ring-[#00a884]"
                   />
                 </form>
                 <button
@@ -925,13 +1286,13 @@ export default function App() {
           )}
         </main>
       ) : (
-        <main className="flex-1 flex flex-col items-center justify-center bg-[#f0f2f5] dark:bg-[#0b141a] text-center px-10 border-b-8 border-[#00a884]">
-          <div className="bg-white dark:bg-gray-800 p-6 rounded-full shadow-sm mb-6 text-[#00a884]">
-            <MessageSquare size={64} />
+        <main className="flex-1 flex flex-col items-center justify-center bg-[#f0f2f5] dark:bg-[#0b141a] text-center px-10">
+          <div className="w-32 h-32 bg-white rounded-full shadow-md mb-6 overflow-hidden flex items-center justify-center border-4 border-white dark:border-gray-700">
+            <img src="/gti-logo.png" alt="GTI Logo" className="w-full h-full object-cover" />
           </div>
-          <h2 className="text-2xl font-light text-gray-800 dark:text-gray-100 mb-4">WhatsApp Compartilhado</h2>
-          <p className="text-gray-500 dark:text-gray-400 max-w-md text-sm">
-            Selecione uma conversa para começar a atender. Todos os atendentes podem usar esta interface simultaneamente, atribuindo os chats a eles mesmos.
+          <h2 className="text-3xl font-bold text-gray-800 dark:text-gray-100 mb-4 tracking-tight">GTI-ZAP</h2>
+          <p className="text-gray-500 dark:text-gray-400 max-w-md text-sm leading-relaxed">
+            Sistema Integrado de Atendimento via WhatsApp da Gerência de TI. Selecione uma conversa ao lado para iniciar.
           </p>
         </main>
       )}
@@ -954,7 +1315,7 @@ export default function App() {
                     src={contactDetails.profilePicUrl}
                     alt="Profile"
                     className="w-full h-full object-cover cursor-pointer hover:opacity-90"
-                    onClick={() => setFullscreenImage(contactDetails.profilePicUrl)}
+                    onClick={() => setFullscreenMedia({ url: contactDetails.profilePicUrl, type: 'image/jpeg' })}
                   />
                 ) : selectedChat.phone_number.includes('@g.us') ? (
                   <Users size={64} />
@@ -966,7 +1327,7 @@ export default function App() {
                   src={selectedChat.profile_pic_url}
                   alt="Profile"
                   className="w-full h-full object-cover cursor-pointer hover:opacity-90"
-                  onClick={() => setFullscreenImage(selectedChat.profile_pic_url)}
+                  onClick={() => setFullscreenMedia({ url: selectedChat.profile_pic_url || '', type: 'image/jpeg' })}
                 />
               ) : selectedChat.phone_number.includes('@g.us') ? (
                 <Users size={64} />
@@ -985,14 +1346,16 @@ export default function App() {
                 'Grupo'
               ) : (
                 (() => {
-                  // Usa sempre o número do @c.us do chat como fonte da verdade
-                  const rawPhone = selectedChat.phone_number.split('@')[0];
-                  return `Celular: +${rawPhone}`;
+                  // Prioriza o número resolvido do backend (que já vem limpo)
+                  const phoneNum = contactDetails?.number || selectedChat.phone_number.split('@')[0];
+                  // Remove @c.us ou @lid se ainda existir
+                  const clean = phoneNum.replace(/@.*$/, '');
+                  return `Celular: +${clean}`;
                 })()
               )}
             </p>
-            <p className="text-gray-400 text-xs mt-1 bg-gray-100 px-2 py-1 rounded">
-              ID Interno: {contactDetails?.number ? (contactDetails.groupData ? `${contactDetails.number}@g.us` : `${contactDetails.number}@c.us`) : selectedChat.phone_number}
+            <p className="text-gray-400 text-xs mt-1 bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded">
+              ID Interno: {selectedChat.phone_number}
             </p>
 
             {contactDetails && contactDetails.pushname && contactDetails.pushname !== selectedChat.contact_name && (
@@ -1034,24 +1397,55 @@ export default function App() {
           )}
 
           <div className="bg-white dark:bg-gray-800 p-5 border-y border-gray-200 dark:border-gray-700 mb-2 shadow-sm">
-            <div className="flex justify-between items-center mb-2">
-              <h3 className="text-[#00a884] text-xs font-bold uppercase">Anotações Internas</h3>
-              {chatNotes !== (chats.find(c => c.id === selectedChatId)?.notes || '') && (
-                <button 
-                  onClick={saveNotes}
-                  disabled={isSavingNotes}
-                  className="text-[10px] bg-[#00a884] text-white px-2 py-1 rounded hover:bg-[#008f6f] transition-colors disabled:opacity-50"
-                >
-                  {isSavingNotes ? 'Salvando...' : 'Salvar'}
-                </button>
-              )}
+            <h3 className="text-[#00a884] text-xs font-bold uppercase mb-3">Anotações Internas</h3>
+
+            {/* Add new note */}
+            <div className="flex gap-2 mb-3">
+              <textarea
+                className="flex-1 h-16 p-2 text-sm bg-yellow-50 dark:bg-gray-700/50 border border-yellow-100 dark:border-gray-600 rounded focus:outline-none focus:ring-1 focus:ring-[#00a884] text-gray-800 dark:text-gray-200 resize-none"
+                placeholder="Escreva uma anotação..."
+                value={newNoteText}
+                onChange={(e) => setNewNoteText(e.target.value)}
+              />
+              <button
+                onClick={addNote}
+                disabled={isSavingNote || !newNoteText.trim()}
+                className="self-end px-3 py-2 bg-[#00a884] text-white rounded text-xs font-bold hover:bg-[#008f6f] transition-colors disabled:opacity-50"
+              >
+                {isSavingNote ? '...' : 'Salvar'}
+              </button>
             </div>
-            <textarea
-              className="w-full h-24 p-2 text-sm bg-yellow-50 dark:bg-gray-700/50 border border-yellow-100 dark:border-gray-600 rounded focus:outline-none focus:ring-1 focus:ring-[#00a884] text-gray-800 dark:text-gray-200 resize-none"
-              placeholder="Adicione observações sobre este cliente/grupo aqui..."
-              value={chatNotes}
-              onChange={(e) => setChatNotes(e.target.value)}
-            />
+
+            {/* Notes list */}
+            <div className="space-y-2 max-h-60 overflow-y-auto">
+              {chatNotes.length === 0 && (
+                <p className="text-gray-400 text-xs text-center py-2">Nenhuma anotação ainda.</p>
+              )}
+              {chatNotes.map(note => (
+                <div key={note.id} className="bg-yellow-50 dark:bg-gray-700/40 rounded-lg p-3 border border-yellow-100 dark:border-gray-600">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-bold text-[#00a884]">
+                      {agents[note.user_id] || 'Atendente'}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-gray-400">
+                        {new Date(note.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' })} às {new Date(note.created_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      {(note.user_id === user.id || userRole === 'admin') && (
+                        <button
+                          onClick={() => deleteNote(note.id)}
+                          className="text-red-400 hover:text-red-600 transition-colors"
+                          title="Apagar anotação"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{note.text}</p>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="bg-white dark:bg-gray-800 p-5 border-y border-gray-200 dark:border-gray-700 mb-2 shadow-sm">
@@ -1066,13 +1460,29 @@ export default function App() {
             </h3>
             <div className="grid grid-cols-3 gap-2">
               {messages.filter(m => m.media_url).slice(-6).reverse().map((msg, idx) => (
-                <div key={idx} className="aspect-square bg-gray-100 rounded overflow-hidden cursor-pointer hover:opacity-80 transition-opacity">
+                <div
+                  key={idx}
+                  className="aspect-square bg-gray-100 dark:bg-gray-700 rounded overflow-hidden cursor-pointer hover:opacity-80 transition-opacity"
+                  onClick={() => setFullscreenMedia({ url: `http://${window.location.hostname}:3001${msg.media_url}`, type: msg.media_type || 'application/octet-stream' })}
+                >
                   {msg.media_type?.startsWith('image/') ? (
-                    <img src={`http://${window.location.hostname}:3001${msg.media_url}`} alt="Media" className="w-full h-full object-cover" onClick={() => setFullscreenImage(`http://${window.location.hostname}:3001${msg.media_url}`)} />
+                    <img src={`http://${window.location.hostname}:3001${msg.media_url}`} alt="Media" className="w-full h-full object-cover" />
                   ) : msg.media_type?.startsWith('video/') ? (
-                    <div className="w-full h-full bg-black flex items-center justify-center text-white"><svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" strokeWidth="2" fill="none"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></div>
+                    <div className="w-full h-full bg-black flex items-center justify-center text-white">
+                      <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center backdrop-blur-sm">
+                        <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" strokeWidth="2" fill="none"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                      </div>
+                    </div>
+                  ) : msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg' ? (
+                    <div className="w-full h-full bg-[#00a884]/10 flex flex-col items-center justify-center text-[#00a884]">
+                      <Headphones size={24} />
+                      <span className="text-[9px] mt-1 uppercase font-bold">Áudio</span>
+                    </div>
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-gray-500"><Paperclip size={24} /></div>
+                    <div className="w-full h-full flex flex-col items-center justify-center text-gray-500">
+                      <Paperclip size={24} />
+                      <span className="text-[9px] mt-1 uppercase font-bold">Arquivo</span>
+                    </div>
                   )}
                 </div>
               ))}
@@ -1084,12 +1494,123 @@ export default function App() {
         </aside>
       )}
 
-      {fullscreenImage && (
+      {fullscreenMedia && (
         <div
-          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 cursor-zoom-out"
-          onClick={() => setFullscreenImage(null)}
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+          onClick={() => setFullscreenMedia(null)}
         >
-          <img src={fullscreenImage} alt="Fullscreen" className="max-w-full max-h-full object-contain" />
+          <button
+            className="absolute top-4 right-4 w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center text-white transition-colors z-10"
+            onClick={() => setFullscreenMedia(null)}
+          >
+            <X size={24} />
+          </button>
+
+          <div onClick={(e) => e.stopPropagation()} className="max-w-4xl max-h-[90vh] flex items-center justify-center">
+            {fullscreenMedia.type.startsWith('image/') ? (
+              <img src={fullscreenMedia.url} alt="Fullscreen" className="max-w-full max-h-[90vh] object-contain rounded" />
+            ) : fullscreenMedia.type.startsWith('video/') ? (
+              <video src={fullscreenMedia.url} controls autoPlay className="max-w-full max-h-[90vh] rounded" />
+            ) : fullscreenMedia.type.startsWith('audio/') || fullscreenMedia.type === 'video/ogg' ? (
+              <div className="bg-white dark:bg-gray-800 rounded-2xl p-8 shadow-2xl flex flex-col items-center gap-4 min-w-[320px]">
+                <div className="w-20 h-20 rounded-full bg-[#00a884]/10 flex items-center justify-center">
+                  <Headphones size={36} className="text-[#00a884]" />
+                </div>
+                <p className="text-gray-800 dark:text-gray-100 font-medium">Reproduzindo áudio</p>
+                <audio src={fullscreenMedia.url} controls autoPlay className="w-full" />
+              </div>
+            ) : fullscreenMedia.type === 'application/pdf' ? (
+              <iframe src={fullscreenMedia.url} className="w-[80vw] h-[85vh] rounded bg-white" title="PDF Viewer" />
+            ) : (
+              <div className="bg-white dark:bg-gray-800 rounded-2xl p-8 shadow-2xl flex flex-col items-center gap-4 min-w-[320px]">
+                <div className="w-20 h-20 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center">
+                  <Paperclip size={36} className="text-gray-500" />
+                </div>
+                <p className="text-gray-800 dark:text-gray-100 font-medium">Arquivo</p>
+                <a
+                  href={fullscreenMedia.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="bg-[#00a884] text-white font-bold px-6 py-2 rounded-lg hover:bg-[#008f6f] transition-colors"
+                >
+                  Baixar Arquivo
+                </a>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Contact Picker Modal */}
+      {contactPickerOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+          onClick={() => setContactPickerOpen(false)}
+        >
+          <div
+            className="bg-white dark:bg-[#111b21] rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 bg-[#00a884]">
+              <h3 className="text-white font-bold text-base">Enviar Contato</h3>
+              <button
+                onClick={() => setContactPickerOpen(false)}
+                className="text-white/70 hover:text-white transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Search */}
+            <div className="p-3 border-b border-gray-200 dark:border-gray-700">
+              <div className="flex items-center bg-gray-100 dark:bg-gray-800 rounded-lg px-3 py-2">
+                <Search size={16} className="text-gray-400 mr-2" />
+                <input
+                  type="text"
+                  value={contactSearch}
+                  onChange={(e) => setContactSearch(e.target.value)}
+                  placeholder="Buscar contato..."
+                  className="flex-1 bg-transparent text-sm text-gray-800 dark:text-gray-200 outline-none placeholder-gray-400"
+                  autoFocus
+                />
+              </div>
+            </div>
+
+            {/* Contact List */}
+            <div className="flex-1 overflow-y-auto">
+              {loadingContacts ? (
+                <div className="flex items-center justify-center py-10">
+                  <div className="w-6 h-6 border-2 border-[#00a884] border-t-transparent rounded-full animate-spin"></div>
+                  <span className="ml-2 text-sm text-gray-500">Carregando contatos...</span>
+                </div>
+              ) : (
+                whatsappContacts
+                  .filter(c =>
+                    c.name.toLowerCase().includes(contactSearch.toLowerCase()) ||
+                    c.number.includes(contactSearch)
+                  )
+                  .map(contact => (
+                    <button
+                      key={contact.id}
+                      onClick={() => sendContact(contact)}
+                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors border-b border-gray-100 dark:border-gray-800"
+                    >
+                      <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-gray-500">
+                        <User size={20} />
+                      </div>
+                      <div className="text-left flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">{contact.name}</p>
+                        <p className="text-xs text-gray-500 truncate">{contact.number || contact.id}</p>
+                      </div>
+                    </button>
+                  ))
+              )}
+              {!loadingContacts && whatsappContacts.filter(c => c.name.toLowerCase().includes(contactSearch.toLowerCase()) || c.number.includes(contactSearch)).length === 0 && (
+                <p className="text-center text-gray-400 text-sm py-10">Nenhum contato encontrado.</p>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
