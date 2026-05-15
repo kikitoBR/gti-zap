@@ -932,8 +932,23 @@ app.post('/edit', async (req, res) => {
       formattedNumber = `${formattedNumber}@c.us`;
     }
 
-    const serializedId = `true_${formattedNumber}_${whatsappId}`;
-    const msg = await client.getMessageById(serializedId);
+    let msg;
+    try {
+      const serializedId = `true_${formattedNumber}_${whatsappId}`;
+      msg = await client.getMessageById(serializedId);
+    } catch (e) {
+      console.log('getMessageById falhou no edit, tentando busca alternativa...');
+    }
+
+    if (!msg) {
+      try {
+        const chat = await client.getChatById(formattedNumber);
+        const msgs = await chat.fetchMessages({ limit: 50 });
+        msg = msgs.find(m => m.id.id === whatsappId || m.id._serialized === whatsappId);
+      } catch (e) {
+        console.error('Erro na busca alternativa para edit:', e);
+      }
+    }
 
     if (!msg) {
       return res.status(404).json({ error: 'Mensagem não encontrada no WhatsApp.' });
@@ -968,12 +983,26 @@ app.post('/delete', async (req, res) => {
       formattedNumber = `${formattedNumber}@c.us`;
     }
 
-    let serializedId = `true_${formattedNumber}_${whatsappId}`;
-    let msg = await client.getMessageById(serializedId);
+    let msg;
+    try {
+      let serializedId = `true_${formattedNumber}_${whatsappId}`;
+      msg = await client.getMessageById(serializedId);
+      if (!msg) {
+        serializedId = `false_${formattedNumber}_${whatsappId}`;
+        msg = await client.getMessageById(serializedId);
+      }
+    } catch (e) {
+      console.log('getMessageById falhou no delete, tentando busca alternativa...');
+    }
 
     if (!msg) {
-      serializedId = `false_${formattedNumber}_${whatsappId}`;
-      msg = await client.getMessageById(serializedId);
+      try {
+        const chat = await client.getChatById(formattedNumber);
+        const msgs = await chat.fetchMessages({ limit: 50 });
+        msg = msgs.find(m => m.id.id === whatsappId || m.id._serialized === whatsappId);
+      } catch (e) {
+        console.error('Erro na busca alternativa para delete:', e);
+      }
     }
 
     if (!msg) {
