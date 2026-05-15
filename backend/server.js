@@ -1013,12 +1013,28 @@ app.post('/react', async (req, res) => {
       formattedNumber = `${formattedNumber}@c.us`;
     }
 
-    let serializedId = `true_${formattedNumber}_${whatsappId}`;
-    let msg = await client.getMessageById(serializedId);
-
-    if (!msg) {
-      serializedId = `false_${formattedNumber}_${whatsappId}`;
+    let msg;
+    try {
+      // Tenta primeiro pelo ID serializado construído
+      let serializedId = `true_${formattedNumber}_${whatsappId}`;
       msg = await client.getMessageById(serializedId);
+      if (!msg) {
+        serializedId = `false_${formattedNumber}_${whatsappId}`;
+        msg = await client.getMessageById(serializedId);
+      }
+    } catch (e) {
+      console.log('getMessageById falhou, tentando busca alternativa...');
+    }
+
+    // Se ainda não encontrou, tenta buscar nas mensagens recentes do chat
+    if (!msg) {
+      try {
+        const chat = await client.getChatById(formattedNumber);
+        const msgs = await chat.fetchMessages({ limit: 50 });
+        msg = msgs.find(m => m.id.id === whatsappId || m.id._serialized === whatsappId);
+      } catch (e) {
+        console.error('Erro na busca alternativa de mensagem:', e);
+      }
     }
 
     if (!msg) {
@@ -1045,12 +1061,26 @@ app.post('/transcribe', async (req, res) => {
       formattedNumber = `${formattedNumber}@c.us`;
     }
 
-    let serializedId = `true_${formattedNumber}_${whatsappId}`;
-    let msg = await client.getMessageById(serializedId);
+    let msg;
+    try {
+      let serializedId = `true_${formattedNumber}_${whatsappId}`;
+      msg = await client.getMessageById(serializedId);
+      if (!msg) {
+        serializedId = `false_${formattedNumber}_${whatsappId}`;
+        msg = await client.getMessageById(serializedId);
+      }
+    } catch (e) {
+      console.log('getMessageById falhou na transcrição, tentando busca alternativa...');
+    }
 
     if (!msg) {
-      serializedId = `false_${formattedNumber}_${whatsappId}`;
-      msg = await client.getMessageById(serializedId);
+      try {
+        const chat = await client.getChatById(formattedNumber);
+        const msgs = await chat.fetchMessages({ limit: 50 });
+        msg = msgs.find(m => m.id.id === whatsappId || m.id._serialized === whatsappId);
+      } catch (e) {
+        console.error('Erro na busca alternativa para transcrição:', e);
+      }
     }
 
     if (!msg) {
