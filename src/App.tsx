@@ -102,6 +102,7 @@ export default function App() {
   const [deleteMenuId, setDeleteMenuId] = useState<string | null>(null);
   const [reactionMenuId, setReactionMenuId] = useState<string | null>(null);
   const [transcribingMessageId, setTranscribingMessageId] = useState<string | null>(null);
+  const [toastNotification, setToastNotification] = useState<{ id: string, name: string, text: string, chatId: string } | null>(null);
   
   // Typing Indicator State
   const [typingUsers, setTypingUsers] = useState<Record<string, Record<string, string>>>({});
@@ -381,23 +382,22 @@ export default function App() {
 
     // Som e Notificação para mensagens recebidas
     if (newMsg.is_incoming) {
-      // Toca o som (Usando o arquivo local notification.ogg)
-      const audio = new Audio('/notification.ogg');
-      audio.volume = 0.6;
-      audio.play().then(() => {
-        console.log('[DEBUG] Som local tocado com sucesso.');
-      }).catch(e => {
-        console.warn('[DEBUG] Browser bloqueou o som local:', e);
-      });
+      if (document.hidden || newMsg.chat_id !== selectedChatIdRef.current) {
+        // Toca o som (Usando o arquivo local notification.ogg)
+        const audio = new Audio('/notification.ogg');
+        audio.volume = 0.6;
+        audio.play().catch(e => {
+          console.warn('[DEBUG] Browser bloqueou o som local:', e);
+        });
 
-      // Notificação Visual (Browser)
-      if (Notification.permission === 'granted') {
         const chat = chatsRef.current.find(c => c.id === newMsg.chat_id);
-        
-        // Só dispara se não for o chat que estou olhando AGORA ou se a aba estiver em background
-        if (document.hidden || newMsg.chat_id !== selectedChatIdRef.current) {
-          const n = new Notification(chat?.contact_name || 'GTI-ZAP', {
-            body: newMsg.text?.replace(/\[.*?\]/g, '') || '📷 Mídia recebida',
+        const senderName = chat?.contact_name || 'GTI-ZAP';
+        const msgText = newMsg.text?.replace(/\[.*?\]/g, '') || '📷 Mídia recebida';
+
+        // Notificação Visual (Browser)
+        if (Notification.permission === 'granted') {
+          const n = new Notification(senderName, {
+            body: msgText,
             icon: 'https://cdn-icons-png.flaticon.com/512/733/733585.png',
             tag: newMsg.chat_id,
             renotify: true
@@ -409,9 +409,18 @@ export default function App() {
               setSelectedChatId(newMsg.chat_id);
             }
           };
+        } else if (Notification.permission !== 'denied') {
+          Notification.requestPermission();
         }
-      } else if (Notification.permission !== 'denied') {
-        Notification.requestPermission();
+
+        // In-App Toast Visual (Fallback 100% confiável)
+        setToastNotification({
+          id: newMsg.id,
+          name: senderName,
+          text: msgText,
+          chatId: newMsg.chat_id
+        });
+        setTimeout(() => setToastNotification(null), 5000);
       }
     }
 
@@ -808,6 +817,27 @@ export default function App() {
 
   return (
     <div className={`flex h-screen w-full bg-[#f0f2f5] dark:bg-gray-900 font-sans overflow-hidden ${isDarkMode ? 'dark' : ''}`}>
+      {/* Toast In-App */}
+      {toastNotification && (
+        <div 
+          onClick={() => {
+            setSelectedChatId(toastNotification.chatId);
+            setToastNotification(null);
+          }}
+          className="absolute top-4 right-4 z-50 bg-[#00a884] dark:bg-[#06cf9c] text-white p-4 rounded-lg shadow-2xl cursor-pointer w-72 animate-in slide-in-from-right-10 fade-in duration-300 hover:scale-105 transition-all border border-[#008f6f]"
+        >
+          <div className="flex justify-between items-start mb-1">
+            <h4 className="font-bold truncate pr-4">{toastNotification.name}</h4>
+            <button 
+              onClick={(e) => { e.stopPropagation(); setToastNotification(null); }} 
+              className="absolute top-2 right-2 p-1 hover:bg-black/20 rounded-full text-white"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <p className="text-sm line-clamp-2 opacity-90">{toastNotification.text}</p>
+        </div>
+      )}
 
       {/* Sidebar - Menu (Left) */}
       <div className="w-16 bg-[#111b21] flex flex-col items-center py-4 space-y-6">
