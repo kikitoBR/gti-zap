@@ -381,33 +381,37 @@ export default function App() {
 
     // Som e Notificação para mensagens recebidas
     if (newMsg.is_incoming) {
-      // Toca o som (Usando um link alternativo e garantindo o play)
-      const audio = new Audio('https://notificationsounds.com/storage/sounds/file-sounds-1150-pristine.mp3');
-      audio.volume = 0.5;
+      // Toca o som (Usando o arquivo local notification.ogg)
+      const audio = new Audio('/notification.ogg');
+      audio.volume = 0.6;
       audio.play().then(() => {
-        console.log('[DEBUG] Som tocado com sucesso.');
+        console.log('[DEBUG] Som local tocado com sucesso.');
       }).catch(e => {
-        console.warn('[DEBUG] Browser bloqueou o som automaticamente (precisa de interação previa):', e);
+        console.warn('[DEBUG] Browser bloqueou o som local:', e);
       });
 
-      // Notificação Visual (Browser) se não estiver na janela ou se for outro chat
-      console.log('[DEBUG] Checando se mostra notificação:', { 
-        hidden: document.hidden, 
-        isDifferentChat: newMsg.chat_id !== selectedChatIdRef.current,
-        permission: Notification.permission 
-      });
-
-      if (document.hidden || newMsg.chat_id !== selectedChatIdRef.current) {
-        if (Notification.permission === 'granted') {
-          const chat = chatsRef.current.find(c => c.id === newMsg.chat_id);
-          console.log('[DEBUG] Enviando notificação para o browser de:', chat?.contact_name);
-          new Notification(chat?.contact_name || 'Nova Mensagem GTI-ZAP', {
+      // Notificação Visual (Browser)
+      if (Notification.permission === 'granted') {
+        const chat = chatsRef.current.find(c => c.id === newMsg.chat_id);
+        
+        // Só dispara se não for o chat que estou olhando AGORA ou se a aba estiver em background
+        if (document.hidden || newMsg.chat_id !== selectedChatIdRef.current) {
+          const n = new Notification(chat?.contact_name || 'GTI-ZAP', {
             body: newMsg.text?.replace(/\[.*?\]/g, '') || '📷 Mídia recebida',
-            icon: 'https://cdn-icons-png.flaticon.com/512/733/733585.png'
+            icon: 'https://cdn-icons-png.flaticon.com/512/733/733585.png',
+            tag: newMsg.chat_id,
+            renotify: true
           });
-        } else {
-          console.log('[DEBUG] Notificação não enviada: Permissão é', Notification.permission);
+
+          n.onclick = () => {
+            window.focus();
+            if (newMsg.chat_id) {
+              setSelectedChatId(newMsg.chat_id);
+            }
+          };
         }
+      } else if (Notification.permission !== 'denied') {
+        Notification.requestPermission();
       }
     }
 
