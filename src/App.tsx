@@ -4,6 +4,7 @@ import { supabase } from './lib/supabase';
 import Login from './Login';
 import AudioPlayer from './components/AudioPlayer';
 import Settings from './components/Settings';
+import AdminPanel from './components/AdminPanel';
 
 type Message = {
   id: string;
@@ -58,6 +59,7 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<'all' | 'mine' | 'groups' | 'team'>('all');
   const [showSettings, setShowSettings] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
   const [userSignature, setUserSignature] = useState<string | null>(null);
   const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
@@ -405,7 +407,7 @@ export default function App() {
             icon: 'https://cdn-icons-png.flaticon.com/512/733/733585.png',
             tag: newMsg.chat_id,
             renotify: true
-          });
+          } as any);
 
           n.onclick = () => {
             window.focus();
@@ -850,30 +852,30 @@ export default function App() {
         </div>
         <nav className="flex-1 flex flex-col space-y-4 items-center w-full px-2">
           <button
-            onClick={() => { if (activeTab === 'groups' || activeTab === 'team') setActiveTab('all'); setShowSettings(false); }}
-            className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${!showSettings && activeTab !== 'groups' && activeTab !== 'team' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
+            onClick={() => { if (activeTab === 'groups' || activeTab === 'team') setActiveTab('all'); setShowSettings(false); setShowAdmin(false); }}
+            className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${!showSettings && !showAdmin && activeTab !== 'groups' && activeTab !== 'team' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
             title="Conversas"
           >
             <MessageSquare size={24} />
           </button>
           <button
-            onClick={() => { setActiveTab('groups'); setShowSettings(false); }}
-            className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${!showSettings && activeTab === 'groups' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
+            onClick={() => { setActiveTab('groups'); setShowSettings(false); setShowAdmin(false); }}
+            className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${!showSettings && !showAdmin && activeTab === 'groups' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
             title="Grupos"
           >
             <Users size={24} />
           </button>
           {userRole === 'admin' && (
             <button
-              onClick={() => { setActiveTab('team'); setShowSettings(false); }}
-              className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${!showSettings && activeTab === 'team' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
+              onClick={() => { setActiveTab('team'); setShowSettings(false); setShowAdmin(false); }}
+              className={`w-full p-2 flex justify-center rounded-lg relative transition-colors ${!showSettings && !showAdmin && activeTab === 'team' ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
               title="Equipe"
             >
               <Shield size={24} />
             </button>
           )}
           <button
-            onClick={() => { setShowSettings(true); setSelectedChatId(null); setIsComposing(false); }}
+            onClick={() => { setShowSettings(true); setShowAdmin(false); setSelectedChatId(null); setIsComposing(false); }}
             className={`w-full p-2 flex justify-center rounded-lg transition-colors ${showSettings ? 'bg-[#2a3942] text-white' : 'text-gray-400 hover:bg-[#2a3942] hover:text-white'}`}
             title="Configurações"
           >
@@ -936,6 +938,18 @@ export default function App() {
             <div className="p-2 bg-[#f0f2f5] dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 text-center">
               <span className="text-xs font-bold uppercase tracking-wider text-[#00a884]"><Shield size={12} className="inline mr-1" />Painel da Equipe</span>
             </div>
+
+            {userRole === 'admin' && (
+              <div className="p-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                <button
+                  onClick={() => setShowAdmin(true)}
+                  className="w-full flex items-center justify-center gap-2 bg-[#00a884] hover:bg-[#008f6f] text-white text-xs font-bold py-2.5 px-4 rounded transition-colors shadow-sm"
+                >
+                  <UserPlus size={16} />
+                  CONVIDAR NOVO ATENDENTE
+                </button>
+              </div>
+            )}
             <div className="flex-1 overflow-y-auto">
               {teamMembers.map(member => {
                 const memberStatus = getTeamMemberStatus(member);
@@ -1080,6 +1094,11 @@ export default function App() {
           onClose={() => setShowSettings(false)}
           onProfileUpdated={() => fetchInitialData()}
           onFontSizeChange={(size) => setChatFontSize(size)}
+        />
+      ) : showAdmin ? (
+        <AdminPanel
+          user={user}
+          onClose={() => setShowAdmin(false)}
         />
       ) : isComposing ? (
         <main className="flex-1 flex flex-col items-center justify-center bg-[#f0f2f5] dark:bg-[#0b141a] px-10 border-b-8 border-[#00a884]">

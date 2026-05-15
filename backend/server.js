@@ -1368,6 +1368,42 @@ app.use((err, req, res, next) => {
   next(err);
 });
 
+// Rota para convidar novos usuários por e-mail (Supabase Auth Invite)
+app.post('/invite', async (req, res) => {
+  const { email } = req.body;
+  
+  if (!email) {
+    return res.status(400).json({ error: 'E-mail é obrigatório' });
+  }
+
+  try {
+    // Precisamos da Service Role Key para convidar usuários
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!serviceKey) {
+      throw new Error('SUPABASE_SERVICE_ROLE_KEY não configurada no backend.');
+    }
+
+    const adminClient = createClient(process.env.SUPABASE_URL, serviceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
+
+    // 1. Enviar convite oficial do Supabase Auth
+    const { data, error } = await adminClient.auth.admin.inviteUserByEmail(email, {
+      redirectTo: `http://${req.hostname}:3000` // Ajuste para a URL do seu frontend
+    });
+
+    if (error) throw error;
+    
+    res.json({ message: 'Convite enviado com sucesso!', data });
+  } catch (error) {
+    console.error('Erro ao enviar convite:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, async () => {
   console.log(`Backend rodando na porta ${PORT}`);

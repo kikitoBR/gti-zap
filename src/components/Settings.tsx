@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, Camera, Lock, Save, ArrowLeft, Eye, EyeOff, CheckCircle, AlertCircle, Mail, Phone, FileText, Edit3, Type } from 'lucide-react';
+import { User, Camera, Lock, Save, ArrowLeft, Eye, EyeOff, CheckCircle, AlertCircle, Mail, Phone, FileText, Edit3, Type, UserPlus, Plus, Trash2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 interface SettingsProps {
@@ -33,11 +33,6 @@ export default function Settings({ user, currentName, userRole, chatFontSize, on
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Invitation fields
-  const [invites, setInvites] = useState<any[]>([]);
-  const [newInviteEmail, setNewInviteEmail] = useState('');
-  const [loadingInvites, setLoadingInvites] = useState(false);
 
   // Load user data
   useEffect(() => {
@@ -202,55 +197,7 @@ export default function Settings({ user, currentName, userRole, chatFontSize, on
     { id: 'signature' as const, label: 'Assinatura', icon: FileText, description: 'Nome nas mensagens' },
     { id: 'appearance' as const, label: 'Aparência', icon: Type, description: 'Tamanho do texto' },
     { id: 'password' as const, label: 'Alterar Senha', icon: Lock, description: 'Segurança da conta' },
-    ...(userRole === 'admin' ? [{ id: 'invites' as const, label: 'Convites', icon: UserPlus, description: 'Gerenciar acessos' }] : []),
   ];
-
-  const fetchInvites = async () => {
-    setLoadingInvites(true);
-    const { data } = await supabase.from('user_invites').select('*').order('created_at', { ascending: false });
-    if (data) setInvites(data);
-    setLoadingInvites(false);
-  };
-
-  useEffect(() => {
-    if (activeSection === 'invites') {
-      fetchInvites();
-    }
-  }, [activeSection]);
-
-  const handleAddInvite = async () => {
-    if (!newInviteEmail.trim()) return;
-    
-    // Validar domínio específico
-    if (!newInviteEmail.toLowerCase().endsWith('@edu.campos.rj.gov.br')) {
-      showMessage('error', 'O e-mail deve pertencer ao domínio @edu.campos.rj.gov.br');
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const { error } = await supabase.from('user_invites').insert([{ email: newInviteEmail.toLowerCase().trim(), invited_by: user.id }]);
-      if (error) throw error;
-      setNewInviteEmail('');
-      fetchInvites();
-      showMessage('success', 'Convite enviado!');
-    } catch (err: any) {
-      showMessage('error', `Erro ao convidar: ${err.message}`);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDeleteInvite = async (id: string) => {
-    try {
-      const { error } = await supabase.from('user_invites').delete().eq('id', id);
-      if (error) throw error;
-      fetchInvites();
-      showMessage('success', 'Convite removido.');
-    } catch (err: any) {
-      showMessage('error', 'Erro ao remover convite.');
-    }
-  };
 
   return (
     <main className="flex-1 flex bg-[#f0f2f5] dark:bg-[#0b141a] overflow-hidden">
@@ -601,74 +548,6 @@ export default function Settings({ user, currentName, userRole, chatFontSize, on
                 <Lock size={18} />
                 {saving ? 'Alterando...' : 'Alterar Senha'}
               </button>
-            </div>
-          )}
-
-          {/* Invites Section */}
-          {activeSection === 'invites' && (
-            <div className="space-y-6">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-1">Convites de Acesso</h2>
-                <p className="text-sm text-gray-500 dark:text-gray-400">Apenas e-mails nesta lista podem se cadastrar no sistema.</p>
-              </div>
-
-              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-5">
-                <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-                  <Mail size={14} /> Novo E-mail para Convite
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    type="email"
-                    value={newInviteEmail}
-                    onChange={(e) => setNewInviteEmail(e.target.value)}
-                    placeholder="email@dominio.com"
-                    className="flex-1 bg-gray-50 dark:bg-gray-700 text-gray-900 dark:text-white border border-gray-200 dark:border-gray-600 rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-[#00a884] focus:border-transparent outline-none transition-all"
-                  />
-                  <button
-                    onClick={handleAddInvite}
-                    disabled={saving || !newInviteEmail.trim()}
-                    className="bg-[#00a884] hover:bg-[#008f6f] text-white font-bold py-3 px-6 rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
-                  >
-                    <Plus size={18} /> Convidar
-                  </button>
-                </div>
-              </div>
-
-              <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-                <div className="p-4 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Pessoas Convidadas</h3>
-                </div>
-                <div className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {loadingInvites ? (
-                    <div className="p-8 text-center text-gray-400 text-sm">Carregando convites...</div>
-                  ) : invites.length === 0 ? (
-                    <div className="p-8 text-center text-gray-400 text-sm">Nenhum convite ativo.</div>
-                  ) : (
-                    invites.map((invite) => (
-                      <div key={invite.id} className="p-4 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-[#00a884]">
-                            <Mail size={16} />
-                          </div>
-                          <div>
-                            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{invite.email}</p>
-                            <p className="text-[10px] text-gray-500 dark:text-gray-400">
-                              Adicionado em {new Date(invite.created_at).toLocaleDateString()}
-                            </p>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => handleDeleteInvite(invite.id)}
-                          className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-full transition-all"
-                          title="Remover convite"
-                        >
-                          <Trash2 size={18} />
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
             </div>
           )}
 
