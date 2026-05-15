@@ -67,6 +67,8 @@ export default function App() {
   useEffect(() => {
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
+
+
   const [newMessage, setNewMessage] = useState('');
   const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
   const [editMessage, setEditMessage] = useState<Message | null>(null);
@@ -128,6 +130,10 @@ export default function App() {
   }, [chatFontSize]);
 
   const [chats, setChats] = useState<Chat[]>([]);
+  const chatsRef = useRef<Chat[]>([]);
+  useEffect(() => {
+    chatsRef.current = chats;
+  }, [chats]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [agents, setAgents] = useState<Record<string, string>>({}); // id -> name mapping
   const [userRole, setUserRole] = useState<'admin' | 'atendente'>('atendente');
@@ -367,20 +373,40 @@ export default function App() {
   };
 
   const handleNewMessage = (newMsg: Message) => {
+    console.log('[DEBUG] Processando nova mensagem para notificação:', { 
+      id: newMsg.id, 
+      isIncoming: newMsg.is_incoming,
+      text: newMsg.text?.slice(0, 20)
+    });
+
     // Som e Notificação para mensagens recebidas
     if (newMsg.is_incoming) {
-      // Toca o som
-      const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
-      audio.play().catch(e => console.log('Erro ao tocar som:', e));
+      // Toca o som (Usando um link alternativo e garantindo o play)
+      const audio = new Audio('https://notificationsounds.com/storage/sounds/file-sounds-1150-pristine.mp3');
+      audio.volume = 0.5;
+      audio.play().then(() => {
+        console.log('[DEBUG] Som tocado com sucesso.');
+      }).catch(e => {
+        console.warn('[DEBUG] Browser bloqueou o som automaticamente (precisa de interação previa):', e);
+      });
 
       // Notificação Visual (Browser) se não estiver na janela ou se for outro chat
+      console.log('[DEBUG] Checando se mostra notificação:', { 
+        hidden: document.hidden, 
+        isDifferentChat: newMsg.chat_id !== selectedChatIdRef.current,
+        permission: Notification.permission 
+      });
+
       if (document.hidden || newMsg.chat_id !== selectedChatIdRef.current) {
         if (Notification.permission === 'granted') {
-          const chat = chats.find(c => c.id === newMsg.chat_id);
-          new Notification(`Nova mensagem de ${chat?.contact_name || 'GTI-ZAP'}`, {
-            body: newMsg.text?.replace(/\[.*?\]/g, '') || 'Mídia recebida',
-            icon: '/gti-logo.png'
+          const chat = chatsRef.current.find(c => c.id === newMsg.chat_id);
+          console.log('[DEBUG] Enviando notificação para o browser de:', chat?.contact_name);
+          new Notification(chat?.contact_name || 'Nova Mensagem GTI-ZAP', {
+            body: newMsg.text?.replace(/\[.*?\]/g, '') || '📷 Mídia recebida',
+            icon: 'https://cdn-icons-png.flaticon.com/512/733/733585.png'
           });
+        } else {
+          console.log('[DEBUG] Notificação não enviada: Permissão é', Notification.permission);
         }
       }
     }
