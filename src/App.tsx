@@ -146,6 +146,11 @@ export default function App() {
       setUser(session?.user ?? null);
     });
 
+    // Solicitar permissão de notificação
+    if (Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+
     return () => subscription.unsubscribe();
   }, []);
 
@@ -362,6 +367,24 @@ export default function App() {
   };
 
   const handleNewMessage = (newMsg: Message) => {
+    // Som e Notificação para mensagens recebidas
+    if (newMsg.is_incoming) {
+      // Toca o som
+      const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
+      audio.play().catch(e => console.log('Erro ao tocar som:', e));
+
+      // Notificação Visual (Browser) se não estiver na janela ou se for outro chat
+      if (document.hidden || newMsg.chat_id !== selectedChatIdRef.current) {
+        if (Notification.permission === 'granted') {
+          const chat = chats.find(c => c.id === newMsg.chat_id);
+          new Notification(`Nova mensagem de ${chat?.contact_name || 'GTI-ZAP'}`, {
+            body: newMsg.text?.replace(/\[.*?\]/g, '') || 'Mídia recebida',
+            icon: '/gti-logo.png'
+          });
+        }
+      }
+    }
+
     // Só adiciona à tela se for para o chat que está aberto no momento
     // Usamos o Ref para garantir que temos o ID atualizado mesmo dentro do callback do Realtime
     if (newMsg.chat_id === selectedChatIdRef.current) {
