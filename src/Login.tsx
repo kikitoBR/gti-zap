@@ -16,9 +16,21 @@ export default function Login({ onLogin }: { onLogin: (user: any) => void }) {
     setError('');
 
     try {
-      let data, error;
+      let data, authError;
       if (isSignUp) {
-        ({ data, error } = await supabase.auth.signUp({
+        // 1. Verificar se o e-mail está na whitelist
+        const { data: invite, error: inviteError } = await supabase
+          .from('user_invites')
+          .select('email')
+          .eq('email', email.toLowerCase())
+          .single();
+
+        if (inviteError || !invite) {
+          throw new Error('Este e-mail não foi convidado para o sistema.');
+        }
+
+        // 2. Tentar o cadastro
+        ({ data, error: authError } = await supabase.auth.signUp({
           email,
           password,
           options: {
@@ -26,19 +38,19 @@ export default function Login({ onLogin }: { onLogin: (user: any) => void }) {
           }
         }));
         
-        if (!error && !data.session) {
-          setError('Conta criada com sucesso! Por favor, verifique seu e-mail para confirmar o cadastro antes de entrar. (Ou desative a "Confirmação de E-mail" no painel do Supabase).');
+        if (!authError && !data.session) {
+          setError('Conta criada! Por favor, verifique seu e-mail.');
           setIsSignUp(false);
           return;
         }
       } else {
-        ({ data, error } = await supabase.auth.signInWithPassword({
+        ({ data, error: authError } = await supabase.auth.signInWithPassword({
           email,
           password
         }));
       }
 
-      if (error) throw error;
+      if (authError) throw authError;
       if (data.user) onLogin(data.user);
     } catch (err: any) {
       setError(err.message || 'Erro de autenticação');
@@ -107,13 +119,9 @@ export default function Login({ onLogin }: { onLogin: (user: any) => void }) {
           </button>
         </form>
 
-        <div className="mt-6 text-center">
-          <button 
-            onClick={() => setIsSignUp(!isSignUp)}
-            className="text-sm text-blue-600 hover:underline"
-          >
-            {isSignUp ? 'Já tem uma conta? Entrar' : 'Não tem conta? Registrar'}
-          </button>
+        {/* Link de registro removido para evitar criação de contas sem convite */}
+        <div className="mt-6 text-center text-xs text-gray-400">
+          Acesso restrito a pessoal autorizado.
         </div>
       </div>
     </div>

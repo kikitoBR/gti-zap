@@ -1075,6 +1075,7 @@ export default function App() {
         <Settings
           user={user}
           currentName={agents[user.id] || user.email}
+          userRole={userRole}
           chatFontSize={chatFontSize}
           onClose={() => setShowSettings(false)}
           onProfileUpdated={() => fetchInitialData()}
