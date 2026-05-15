@@ -392,7 +392,11 @@ export default function App() {
 
         const chat = chatsRef.current.find(c => c.id === newMsg.chat_id);
         const senderName = chat?.contact_name || 'GTI-ZAP';
-        const msgText = newMsg.text?.replace(/\[.*?\]/g, '') || '📷 Mídia recebida';
+        
+        // Remove tags de metadados ([META], [REPLY], [TRANSCRIPT]) para não poluir a notificação
+        let msgText = newMsg.text || '';
+        msgText = msgText.replace(/\[(META|REPLY|TRANSCRIPT)\][\s\S]*?\[\/\1\]\n?/g, '').trim();
+        if (!msgText) msgText = '📷 Mídia recebida';
 
         // Notificação Visual (Browser)
         if (Notification.permission === 'granted') {
