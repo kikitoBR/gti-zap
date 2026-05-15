@@ -100,6 +100,11 @@ export default function App() {
   const [deleteMenuId, setDeleteMenuId] = useState<string | null>(null);
   const [reactionMenuId, setReactionMenuId] = useState<string | null>(null);
   const [transcribingMessageId, setTranscribingMessageId] = useState<string | null>(null);
+  
+  // Typing Indicator State
+  const [typingUsers, setTypingUsers] = useState<Record<string, Record<string, string>>>({});
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const typingChannelRef = useRef<any>(null);
 
   // Fechar menus ao clicar fora
   useEffect(() => {
@@ -173,6 +178,23 @@ export default function App() {
         }
       })
       .subscribe();
+
+    // Setup Typing Indicator Channel (Broadcast)
+    const typingChannel = supabase.channel('typing_indicators');
+    typingChannelRef.current = typingChannel;
+    
+    typingChannel.on('broadcast', { event: 'typing' }, payload => {
+      const { chatId, agentId, agentName, isTyping } = payload.payload;
+      setTypingUsers(prev => {
+        const chatTyping = { ...(prev[chatId] || {}) };
+        if (isTyping) {
+          chatTyping[agentId] = agentName;
+        } else {
+          delete chatTyping[agentId];
+        }
+        return { ...prev, [chatId]: chatTyping };
+      });
+    }).subscribe();
 
     return () => {
       clearInterval(heartbeatInterval);
@@ -497,6 +519,33 @@ export default function App() {
       console.error('Erro ao iniciar conversa:', err);
       alert('Erro ao iniciar conversa.');
     }
+  };
+
+  const handleTyping = (text: string) => {
+    setNewMessage(text);
+    
+    if (!selectedChatId || !user) return;
+    
+    // Broadcast isTyping: true
+    if (typingChannelRef.current) {
+      typingChannelRef.current.send({
+        type: 'broadcast',
+        event: 'typing',
+        payload: { chatId: selectedChatId, agentId: user.id, agentName: user.user_metadata?.name || user.email?.split('@')[0] || 'Agente', isTyping: true }
+      });
+    }
+
+    // Debounce to clear typing status
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      if (typingChannelRef.current) {
+        typingChannelRef.current.send({
+          type: 'broadcast',
+          event: 'typing',
+          payload: { chatId: selectedChatId, agentId: user.id, agentName: user.user_metadata?.name || user.email?.split('@')[0] || 'Agente', isTyping: false }
+        });
+      }
+    }, 3000);
   };
 
   const handleAssignToMe = async () => {
@@ -1654,14 +1703,22 @@ export default function App() {
                 >
                   <Sparkles size={20} />
                 </button>
-                <form onSubmit={handleSendMessage} className="flex-1 flex">
-                  <input
-                    type="text"
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    placeholder="Digite uma mensagem..."
-                    className="flex-1 bg-white dark:bg-[#2a3942] text-gray-900 dark:text-gray-100 border-none rounded-lg px-4 py-2 text-sm ring-1 ring-gray-200 dark:ring-gray-700 outline-none focus:ring-1 focus:ring-[#00a884]"
-                  />
+                <form onSubmit={handleSendMessage} className="flex-1 flex flex-col">
+                  {/* Typing Indicator Display */}
+                  {selectedChatId && typingUsers[selectedChatId] && Object.keys(typingUsers[selectedChatId]).filter(id => id !== user?.id).length > 0 && (
+                    <div className="text-xs text-gray-500 italic mb-1 ml-2 animate-pulse">
+                      {Object.keys(typingUsers[selectedChatId]).filter(id => id !== user?.id).map(id => typingUsers[selectedChatId][id]).join(', ')} {Object.keys(typingUsers[selectedChatId]).filter(id => id !== user?.id).length > 1 ? 'estão' : 'está'} digitando...
+                    </div>
+                  )}
+                  <div className="flex w-full">
+                    <input
+                      type="text"
+                      value={newMessage}
+                      onChange={(e) => handleTyping(e.target.value)}
+                      placeholder="Digite uma mensagem..."
+                      className="flex-1 bg-white dark:bg-[#2a3942] text-gray-900 dark:text-gray-100 border-none rounded-lg px-4 py-2 text-sm ring-1 ring-gray-200 dark:ring-gray-700 outline-none focus:ring-1 focus:ring-[#00a884]"
+                    />
+                  </div>
                 </form>
                 <button
                   onClick={handleSendMessage}
