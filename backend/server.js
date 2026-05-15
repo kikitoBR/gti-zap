@@ -30,9 +30,9 @@ const storage = multer.diskStorage({
     cb(null, `avatar_${Date.now()}${extension}`);
   }
 });
-const upload = multer({ 
+const upload = multer({
   storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 } 
+  limits: { fileSize: 5 * 1024 * 1024 }
 });
 
 app.post('/upload-avatar', upload.single('avatar'), (req, res) => {
@@ -61,6 +61,32 @@ const pendingAgentSends = new Map();
 let cachedContacts = null;
 let lastContactsFetch = 0;
 const CONTACTS_CACHE_TIME = 10 * 60 * 1000; // 10 minutos
+
+const genAI = new GoogleGenAI({
+  apiKey: process.env.GOOGLE_GENAI_API_KEY
+});
+
+async function transcribeAudio(media) {
+  try {
+    const result = await genAI.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [{
+        role: 'user',
+        parts: [
+          { inlineData: { data: media.data, mimeType: media.mimetype } },
+          { text: "Transcreva este áudio exatamente como dito. Retorne apenas o texto transcrito, em português, sem comentários adicionais." }
+        ]
+      }]
+    });
+
+    const transcript = result?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      result?.value?.text?.() || "";
+    return transcript.trim();
+  } catch (err) {
+    console.error('Erro na transcrição Gemini:', err);
+    return null;
+  }
+}
 
 // Inicializando Cliente WhatsApp com sessão persistente
 const SESSION_ID = 'gtizap-main';
@@ -108,7 +134,7 @@ async function startVisualWatcher() {
 
         if (hasChats && !isReady) {
           console.log('[Vigia] ⚠️ Chats visíveis, mas sistema oficial dormindo. Tentando despertar...');
-          
+
           // Se em 10 segundos a biblioteca oficial não acordar, damos um "kick" nela
           setTimeout(async () => {
             if (!isReady) {
@@ -119,7 +145,7 @@ async function startVisualWatcher() {
                   window.scrollTo(0, 100);
                   setTimeout(() => window.scrollTo(0, 0), 100);
                 });
-                
+
                 // Emite o ready oficialmente para liberar as rotas da API
                 isReady = true;
                 client.emit('ready');
@@ -201,7 +227,15 @@ client.on('message', async (msg) => {
       }
     }
 
+    let transcript = null;
+    if (msg.hasMedia && (msg.type === 'audio' || msg.type === 'ptt')) {
+      transcript = await transcribeAudio({ data: (await msg.downloadMedia()).data, mimetype: msg.type === 'ptt' ? 'audio/ogg' : 'audio/mp3' });
+    }
+
     let textToSave = msg.body || '';
+    if (transcript) {
+      textToSave = `[TRANSCRIPT]${transcript}[/TRANSCRIPT]\n` + textToSave;
+    }
 
     // EXTRAÇÃO DE REPLY (MENSAGEM RESPONDIDA)
     let replyPart = '';
@@ -256,7 +290,9 @@ client.on('message', async (msg) => {
     if (chat.isGroup) {
       const senderName = contact.name || contact.pushname || contact.number;
       if (msg.body) {
-        textToSave = `${senderName}:\n${msg.body}`;
+        // Para grupos, mantemos o texto limpo no banco. 
+        // O frontend já mostra o nome do remetente acima do balão usando o [META].
+        textToSave = msg.body;
       } else if (msg.hasMedia) {
         let typeName = 'Mídia';
         if (mediaType?.startsWith('audio/')) typeName = 'Áudio';
@@ -439,7 +475,18 @@ client.on('message_create', async (msg) => {
     const metaStr = `[META]${JSON.stringify(senderMeta)}[/META]\n`;
 
     let textToSave = msg.body || '';
-    
+
+    // Transcrever áudio se for nosso envio físico
+    if (msg.hasMedia && (msg.type === 'audio' || msg.type === 'ptt')) {
+      const media = await msg.downloadMedia();
+      if (media) {
+        const transcript = await transcribeAudio(media);
+        if (transcript) {
+          textToSave = `[TRANSCRIPT]${transcript}[/TRANSCRIPT]\n` + textToSave;
+        }
+      }
+    }
+
     // MONTAGEM FINAL
     textToSave = replyPart + metaStr + textToSave;
     console.log(`[DEBUG] message_create final text: ${textToSave.slice(0, 50)}...`);
@@ -528,6 +575,87 @@ client.on('message_ack', async (msg, ack) => {
       .from('messages')
       .update({ status })
       .eq('whatsapp_id', msg.id.id);
+  }
+});
+
+client.on('message_edit', async (msg, newBody, prevBody) => {
+  if (msg.isStatus) return;
+
+  try {
+    const { data: existingMsg } = await supabase
+      .from('messages')
+      .select('text')
+      .eq('whatsapp_id', msg.id.id)
+      .single();
+
+    if (existingMsg) {
+      // Preservar as tags [META] e [REPLY] se existirem
+      let metaTags = '';
+      const metaMatch = existingMsg.text.match(/\[(META|REPLY)\].*?\[\/\1\]\n?/g);
+      if (metaMatch) {
+        metaTags = metaMatch.join('');
+      }
+
+      const editedText = `[EDITED]${metaTags}${newBody}`;
+
+      await supabase
+        .from('messages')
+        .update({ text: editedText })
+        .eq('whatsapp_id', msg.id.id);
+
+      console.log(`Mensagem ${msg.id.id} editada no WhatsApp.`);
+    }
+  } catch (err) {
+    console.error('Erro ao processar message_edit:', err);
+  }
+});
+
+client.on('message_revoke_everyone', async (after, before) => {
+  if (before && before.id) {
+    try {
+      await supabase
+        .from('messages')
+        .update({ text: '[REVOKED]', media_url: null })
+        .eq('whatsapp_id', before.id.id);
+      console.log(`Mensagem ${before.id.id} marcada como revogada.`);
+    } catch (err) {
+      console.error('Erro ao processar message_revoke_everyone:', err);
+    }
+  }
+});
+
+client.on('message_reaction', async (reaction) => {
+  try {
+    const msg = await client.getMessageById(reaction.msgId._serialized);
+    if (!msg) return;
+
+    const reactions = await msg.getReactions();
+    const simplifiedReactions = reactions.map(r => ({
+      reaction: r.id, // O emoji em si está no campo 'id'
+      count: r.senders.length
+    }));
+
+    const { data: existingMsg } = await supabase
+      .from('messages')
+      .select('text')
+      .eq('whatsapp_id', msg.id.id)
+      .single();
+
+    if (existingMsg) {
+      // Remove tag antiga se existir e insere a nova no topo
+      let cleanText = existingMsg.text.replace(/\[REACTIONS\].*?\[\/REACTIONS\]\n?/g, '');
+      let newText = cleanText;
+      if (simplifiedReactions && simplifiedReactions.length > 0) {
+        newText = `[REACTIONS]${JSON.stringify(simplifiedReactions)}[/REACTIONS]\n` + cleanText;
+      }
+
+      await supabase
+        .from('messages')
+        .update({ text: newText })
+        .eq('whatsapp_id', msg.id.id);
+    }
+  } catch (err) {
+    console.error('Erro ao processar message_reaction:', err);
   }
 });
 
@@ -712,7 +840,7 @@ app.post('/send-contact', async (req, res) => {
 
 // Rota para enviar mídia (documento, foto, vídeo, áudio)
 app.post('/send-media', upload.single('media'), async (req, res) => {
-  const { chatId, phoneNumber, agentId, caption } = req.body;
+  const { chatId, phoneNumber, agentId, caption, quotedMsgId, quotedMsgIsIncoming } = req.body;
 
   if (!phoneNumber || !req.file) {
     return res.status(400).json({ error: 'phoneNumber e arquivo são obrigatórios.' });
@@ -734,6 +862,10 @@ app.post('/send-media', upload.single('media'), async (req, res) => {
 
     const options = {};
     if (caption) options.caption = caption;
+    if (quotedMsgId) {
+      const fromMe = quotedMsgIsIncoming === true || quotedMsgIsIncoming === 'true' ? 'false' : 'true';
+      options.quotedMessageId = `${fromMe}_${formattedNumber}_${quotedMsgId}`;
+    }
 
     // Enviar como documento se não for imagem/vídeo/áudio
     const isDocument = !req.file.mimetype.startsWith('image/') &&
@@ -788,8 +920,185 @@ app.post('/send-media', upload.single('media'), async (req, res) => {
   }
 });
 
+app.post('/edit', async (req, res) => {
+  const { whatsappId, phoneNumber, whatsappText, dbText } = req.body;
+  if (!whatsappId || !phoneNumber || !whatsappText || !dbText) {
+    return res.status(400).json({ error: 'Faltam parâmetros para edição.' });
+  }
+
+  try {
+    let formattedNumber = phoneNumber;
+    if (!formattedNumber.includes('@')) {
+      formattedNumber = `${formattedNumber}@c.us`;
+    }
+
+    const serializedId = `true_${formattedNumber}_${whatsappId}`;
+    const msg = await client.getMessageById(serializedId);
+
+    if (!msg) {
+      return res.status(404).json({ error: 'Mensagem não encontrada no WhatsApp.' });
+    }
+
+    const editedMsg = await msg.edit(whatsappText);
+
+    // Atualiza no banco de dados local adicionando a tag [EDITED]
+    const editedDbText = dbText.includes('[EDITED]') ? dbText : `[EDITED]${dbText}`;
+
+    await supabase
+      .from('messages')
+      .update({ text: editedDbText })
+      .eq('whatsapp_id', whatsappId);
+
+    res.json({ success: true, editedMsg });
+  } catch (error) {
+    console.error('Erro ao editar mensagem:', error);
+    res.status(500).json({ error: 'Erro ao editar mensagem via WhatsApp' });
+  }
+});
+
+app.post('/delete', async (req, res) => {
+  const { whatsappId, phoneNumber, forEveryone } = req.body;
+  if (!whatsappId || !phoneNumber) {
+    return res.status(400).json({ error: 'Faltam parâmetros para deleção.' });
+  }
+
+  try {
+    let formattedNumber = phoneNumber;
+    if (!formattedNumber.includes('@')) {
+      formattedNumber = `${formattedNumber}@c.us`;
+    }
+
+    let serializedId = `true_${formattedNumber}_${whatsappId}`;
+    let msg = await client.getMessageById(serializedId);
+
+    if (!msg) {
+      serializedId = `false_${formattedNumber}_${whatsappId}`;
+      msg = await client.getMessageById(serializedId);
+    }
+
+    if (!msg) {
+      return res.status(404).json({ error: 'Mensagem não encontrada no WhatsApp.' });
+    }
+
+    await msg.delete(forEveryone === true);
+
+    if (forEveryone) {
+      await supabase
+        .from('messages')
+        .update({ text: '[REVOKED]', media_url: null })
+        .eq('whatsapp_id', whatsappId);
+    } else {
+      await supabase
+        .from('messages')
+        .delete()
+        .eq('whatsapp_id', whatsappId);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Erro ao apagar mensagem:', error);
+    res.status(500).json({ error: 'Erro ao apagar mensagem via WhatsApp' });
+  }
+});
+
+app.post('/react', async (req, res) => {
+  const { whatsappId, phoneNumber, reaction } = req.body;
+  if (!whatsappId || !phoneNumber) {
+    return res.status(400).json({ error: 'Faltam parâmetros para reação.' });
+  }
+
+  try {
+    let formattedNumber = phoneNumber;
+    if (!formattedNumber.includes('@')) {
+      formattedNumber = `${formattedNumber}@c.us`;
+    }
+
+    let serializedId = `true_${formattedNumber}_${whatsappId}`;
+    let msg = await client.getMessageById(serializedId);
+
+    if (!msg) {
+      serializedId = `false_${formattedNumber}_${whatsappId}`;
+      msg = await client.getMessageById(serializedId);
+    }
+
+    if (!msg) {
+      return res.status(404).json({ error: 'Mensagem não encontrada no WhatsApp.' });
+    }
+
+    await msg.react(reaction);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Erro ao reagir à mensagem:', error);
+    res.status(500).json({ error: 'Erro ao reagir via WhatsApp' });
+  }
+});
+
+app.post('/transcribe', async (req, res) => {
+  const { whatsappId, phoneNumber } = req.body;
+  if (!whatsappId || !phoneNumber) {
+    return res.status(400).json({ error: 'Faltam parâmetros para transcrição.' });
+  }
+
+  try {
+    let formattedNumber = phoneNumber;
+    if (!formattedNumber.includes('@')) {
+      formattedNumber = `${formattedNumber}@c.us`;
+    }
+
+    let serializedId = `true_${formattedNumber}_${whatsappId}`;
+    let msg = await client.getMessageById(serializedId);
+
+    if (!msg) {
+      serializedId = `false_${formattedNumber}_${whatsappId}`;
+      msg = await client.getMessageById(serializedId);
+    }
+
+    if (!msg) {
+      return res.status(404).json({ error: 'Mensagem não encontrada no WhatsApp.' });
+    }
+
+    if (!msg.hasMedia || (msg.type !== 'audio' && msg.type !== 'ptt')) {
+      return res.status(400).json({ error: 'Mensagem não é um áudio válido para transcrição.' });
+    }
+
+    const media = await msg.downloadMedia();
+    if (!media) {
+      return res.status(500).json({ error: 'Falha ao baixar a mídia do WhatsApp.' });
+    }
+
+    const transcript = await transcribeAudio({ data: media.data, mimetype: msg.type === 'ptt' ? 'audio/ogg' : 'audio/mp3' });
+    
+    if (!transcript) {
+      return res.status(500).json({ error: 'Falha ao transcrever com Gemini.' });
+    }
+
+    // Busca a mensagem no banco
+    const { data: existingMsg } = await supabase
+      .from('messages')
+      .select('text')
+      .eq('whatsapp_id', msg.id.id)
+      .single();
+
+    if (existingMsg) {
+      // Remove tag de transcrição antiga, se existir
+      let cleanText = existingMsg.text.replace(/\[TRANSCRIPT\].*?\[\/TRANSCRIPT\]\n?/g, '');
+      let newText = `[TRANSCRIPT]${transcript}[/TRANSCRIPT]\n` + cleanText;
+
+      await supabase
+        .from('messages')
+        .update({ text: newText })
+        .eq('whatsapp_id', msg.id.id);
+    }
+
+    res.json({ success: true, transcript });
+  } catch (error) {
+    console.error('Erro ao solicitar transcrição:', error);
+    res.status(500).json({ error: 'Erro interno ao tentar transcrever' });
+  }
+});
+
 app.post('/send', async (req, res) => {
-  const { chatId, phoneNumber, text, agentId } = req.body;
+  const { chatId, phoneNumber, text, agentId, quotedMsgId, quotedMsgIsIncoming } = req.body;
 
   if (!phoneNumber || !text) {
     return res.status(400).json({ error: 'phoneNumber e text são obrigatórios.' });
@@ -802,7 +1111,13 @@ app.post('/send', async (req, res) => {
       formattedNumber = `${formattedNumber}@c.us`;
     }
 
-    const response = await client.sendMessage(formattedNumber, text);
+    const options = {};
+    if (quotedMsgId) {
+      const fromMe = quotedMsgIsIncoming === true || quotedMsgIsIncoming === 'true' ? 'false' : 'true';
+      options.quotedMessageId = `${fromMe}_${formattedNumber}_${quotedMsgId}`;
+    }
+
+    const response = await client.sendMessage(formattedNumber, text, options);
 
     // Pega o chat canônico do WhatsApp para garantir que usamos o ID correto
     const chat = await response.getChat();
@@ -887,13 +1202,13 @@ IGNORE QUALQUER PENSAMENTO INTERNO. ESCREVA APENAS O JSON.`;
     try {
       // NOVA INTEGRAÇÃO: GOOGLE GEMINI (API V2)
       const ai = new GoogleGenAI({
-        apiKey: 'AIzaSyBFiEDKX8subLTSq9KBbpeEUmdWuLm0kYc'
+        apiKey: process.env.GOOGLE_GENAI_API_KEY
       });
 
       const prompt = `${systemPrompt}\n\nHistórico da conversa para análise:\n${JSON.stringify(chatHistory)}`;
 
       const result = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-lite',
+        model: 'gemini-2.5-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
           temperature: 0.7,

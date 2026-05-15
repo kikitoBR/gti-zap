@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, MoreVertical, Paperclip, Send, User, Check, CheckCheck, MessageSquare, Users, Settings as SettingsIcon, LogOut, Lock, Unlock, Plus, Clock, Moon, Sun, Shield, ChevronDown, X, FileUp, Image, Headphones, UserPlus, Trash2, Sparkles, Loader2 } from 'lucide-react';
+import { Search, MoreVertical, Paperclip, Send, User, Check, CheckCheck, MessageSquare, Users, Settings as SettingsIcon, LogOut, Lock, Unlock, Plus, Clock, Moon, Sun, Shield, ChevronDown, X, FileUp, Image, Headphones, UserPlus, Trash2, Sparkles, Loader2, Reply, Pencil, Ban, Smile, FileText } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import Login from './Login';
 import AudioPlayer from './components/AudioPlayer';
@@ -61,7 +61,15 @@ export default function App() {
   const [userSignature, setUserSignature] = useState<string | null>(null);
   const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
+  const selectedChatIdRef = useRef<string | null>(null);
+
+  // Sincroniza o Ref com o State para evitar stale closure no Realtime
+  useEffect(() => {
+    selectedChatIdRef.current = selectedChatId;
+  }, [selectedChatId]);
   const [newMessage, setNewMessage] = useState('');
+  const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
+  const [editMessage, setEditMessage] = useState<Message | null>(null);
 
   const [isComposing, setIsComposing] = useState(false);
   const [composePhone, setComposePhone] = useState('');
@@ -88,6 +96,22 @@ export default function App() {
   const attachFileRef = useRef<HTMLInputElement>(null);
   const attachImageRef = useRef<HTMLInputElement>(null);
   const attachAudioRef = useRef<HTMLInputElement>(null);
+
+  const [deleteMenuId, setDeleteMenuId] = useState<string | null>(null);
+  const [reactionMenuId, setReactionMenuId] = useState<string | null>(null);
+  const [transcribingMessageId, setTranscribingMessageId] = useState<string | null>(null);
+
+  // Fechar menus ao clicar fora
+  useEffect(() => {
+    const handleClickOutside = () => {
+      setDeleteMenuId(null);
+      setReactionMenuId(null);
+    };
+    if (deleteMenuId || reactionMenuId) {
+      document.addEventListener('click', handleClickOutside);
+    }
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, [deleteMenuId, reactionMenuId]);
 
   // Persistir tema
   useEffect(() => {
@@ -138,9 +162,8 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chats' }, payload => {
         handleChatChange(payload);
       })
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
-          console.log('[Realtime] Nova mensagem detectada:', payload.new);
-          handleNewMessage(payload.new as Message);
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, payload => {
+          handleMessageChange(payload);
         })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, payload => {
         const updatedUser = payload.new as TeamMember;
@@ -206,6 +229,8 @@ export default function App() {
       setIsContactProfileOpen(false);
       setChatNotes([]);
       setNewNoteText('');
+      setReplyToMessage(null);
+      setEditMessage(null);
     }
   }, [selectedChatId]);
 
@@ -288,22 +313,37 @@ export default function App() {
 
   const handleChatChange = (payload: any) => {
     if (payload.eventType === 'INSERT') {
-      setChats(prev => [payload.new as Chat, ...prev].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()));
+      setChats(prev => {
+        if (prev.find(c => c.id === payload.new.id)) return prev;
+        return [payload.new as Chat, ...prev].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+      });
     } else if (payload.eventType === 'UPDATE') {
       setChats(prev => prev.map(c => c.id === payload.new.id ? payload.new as Chat : c).sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()));
     }
   };
 
+  const handleMessageChange = (payload: any) => {
+    if (payload.eventType === 'INSERT') {
+      console.log('[Realtime] Nova mensagem detectada:', payload.new);
+      handleNewMessage(payload.new as Message);
+    } else if (payload.eventType === 'UPDATE') {
+      const updatedMsg = payload.new as Message;
+      // Atualiza o status da mensagem se ela já estiver na lista
+      setMessages(prev => prev.map(m => m.id === updatedMsg.id ? { ...m, ...updatedMsg } : m));
+    }
+  };
+
   const handleNewMessage = (newMsg: Message) => {
     // Só adiciona à tela se for para o chat que está aberto no momento
-    if (newMsg.chat_id === selectedChatId) {
+    // Usamos o Ref para garantir que temos o ID atualizado mesmo dentro do callback do Realtime
+    if (newMsg.chat_id === selectedChatIdRef.current) {
       setMessages(prev => {
         // Evita duplicados (checa se o ID da mensagem já existe na lista atual)
         if (prev.find(m => m.id === newMsg.id)) return prev;
         return [...prev, newMsg];
       });
     } else {
-      console.log(`[Realtime] Mensagem ignorada (Chat ${newMsg.chat_id} não é o selecionado ${selectedChatId})`);
+      console.log(`[Realtime] Mensagem recebida para chat ${newMsg.chat_id}, mas o chat aberto é ${selectedChatIdRef.current}`);
     }
   };
 
@@ -313,7 +353,43 @@ export default function App() {
 
     const currentUserName = userSignature || agents[user.id] || user.email.split('@')[0] || 'Atendente';
     const text = `*${currentUserName}*\n\n${newMessage.trim()}`;
+    const cleanNewMessage = newMessage.trim();
     setNewMessage('');
+    const currentReplyTo = replyToMessage;
+    setReplyToMessage(null);
+
+    if (editMessage) {
+      const currentEditMessage = editMessage;
+      setEditMessage(null);
+      
+      let fullNewText = currentEditMessage.text || '';
+      let metaAndReplyTags = '';
+      const metaMatch = fullNewText.match(/\[(META|REPLY)\].*?\[\/\1\]\n?/g);
+      if (metaMatch) {
+        metaMatch.forEach(m => {
+          metaAndReplyTags += m;
+        });
+      }
+      
+      const whatsappText = `*${currentUserName}*\n\n${cleanNewMessage}`;
+      const dbText = metaAndReplyTags + whatsappText;
+
+      try {
+        await fetch(`http://${window.location.hostname}:3001/edit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            whatsappId: currentEditMessage.whatsapp_id,
+            phoneNumber: selectedChat.phone_number,
+            whatsappText: whatsappText,
+            dbText: dbText
+          })
+        });
+      } catch (err) {
+        console.error('Erro ao editar msg:', err);
+      }
+      return;
+    }
 
     // Enviar via Backend API (que envia pelo WhatsApp Web JS)
     try {
@@ -324,11 +400,68 @@ export default function App() {
           chatId: selectedChat.id,
           phoneNumber: selectedChat.phone_number,
           text: text,
-          agentId: user.id
+          agentId: user.id,
+          quotedMsgId: currentReplyTo?.whatsapp_id,
+          quotedMsgIsIncoming: currentReplyTo?.is_incoming
         })
       });
     } catch (err) {
       console.error('Erro ao enviar msg:', err);
+    }
+  };
+
+  const handleDeleteMessage = async (msg: Message, forEveryone: boolean) => {
+    if (!selectedChat) return;
+    try {
+      await fetch(`http://${window.location.hostname}:3001/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          whatsappId: msg.whatsapp_id,
+          phoneNumber: selectedChat.phone_number,
+          forEveryone
+        })
+      });
+    } catch (err) {
+      console.error('Erro ao apagar msg:', err);
+    }
+  };
+
+  const handleReact = async (msg: Message, reaction: string) => {
+    if (!selectedChat) return;
+    try {
+      await fetch(`http://${window.location.hostname}:3001/react`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          whatsappId: msg.whatsapp_id,
+          phoneNumber: selectedChat.phone_number,
+          reaction
+        })
+      });
+      setReactionMenuId(null);
+    } catch (err) {
+      console.error('Erro ao reagir à msg:', err);
+    }
+  };
+
+  const handleTranscribe = async (msg: Message) => {
+    if (!selectedChat) return;
+    setTranscribingMessageId(msg.whatsapp_id);
+    try {
+      await fetch(`http://${window.location.hostname}:3001/transcribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          whatsappId: msg.whatsapp_id,
+          phoneNumber: selectedChat.phone_number
+        })
+      });
+      // A atualização real-time via Supabase mostrará a transcrição
+    } catch (err) {
+      console.error('Erro ao solicitar transcrição:', err);
+    } finally {
+      setTranscribingMessageId(null);
     }
   };
 
@@ -410,6 +543,12 @@ export default function App() {
     formData.append('phoneNumber', selectedChat.phone_number);
     formData.append('agentId', user.id);
     formData.append('caption', caption);
+    if (replyToMessage?.whatsapp_id) {
+      formData.append('quotedMsgId', replyToMessage.whatsapp_id);
+      formData.append('quotedMsgIsIncoming', String(replyToMessage.is_incoming));
+    }
+    const currentReplyTo = replyToMessage;
+    setReplyToMessage(null);
 
     try {
       const res = await fetch(`http://${window.location.hostname}:3001/send-media`, {
@@ -724,7 +863,7 @@ export default function App() {
           /* Lista de chats normal */
           <>
             {activeTab !== 'groups' ? (
-              <div className="flex border-b border-gray-200 dark:border-gray-700 p-1 bg-[#f0f2f5] dark:bg-gray-900">
+              <div key="normal-tabs" className="flex border-b border-gray-200 dark:border-gray-700 p-1 bg-[#f0f2f5] dark:bg-gray-900">
                 <button
                   className={`flex-1 py-1.5 text-xs font-bold uppercase tracking-wider rounded ${activeTab === 'all' ? 'bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
                   onClick={() => setActiveTab('all')}
@@ -739,7 +878,7 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              <div className="p-2 bg-[#f0f2f5] dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 text-center">
+              <div key="groups-tab-msg" className="p-2 bg-[#f0f2f5] dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 text-center">
                 <span className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">Filtrando Grupos</span>
               </div>
             )}
@@ -1018,8 +1157,115 @@ export default function App() {
                 textToRender = textToRender.replace(replyMatch[0], '');
               }
 
+              // Extrair metadados de mensagem editada ([EDITED])
+              const isEdited = textToRender.includes('[EDITED]');
+              if (isEdited) {
+                textToRender = textToRender.replace('[EDITED]', '');
+              }
+
+              // Detectar mensagem apagada ([REVOKED])
+              const isRevoked = textToRender === '[REVOKED]';
+
+              // Extrair reações ([REACTIONS])
+              let messageReactions: any[] = [];
+              const reactionsMatch = textToRender.match(/\[REACTIONS\](.*?)\[\/REACTIONS\]\n?/);
+              if (reactionsMatch) {
+                try { messageReactions = JSON.parse(reactionsMatch[1]); } catch (e) { }
+                textToRender = textToRender.replace(reactionsMatch[0], '');
+              }
+
+              // Extrair transcrição ([TRANSCRIPT])
+              let audioTranscript = '';
+              const transcriptMatch = textToRender.match(/\[TRANSCRIPT\](.*?)\[\/TRANSCRIPT\]\n?/);
+              if (transcriptMatch) {
+                audioTranscript = transcriptMatch[1];
+                textToRender = textToRender.replace(transcriptMatch[0], '');
+              }
+
               return (
-                <div key={msg.id} id={`msg-${msg.whatsapp_id}`} className={`flex max-w-[75%] gap-2 ${msg.is_incoming ? 'self-start items-start' : 'self-end'}`}>
+                <div key={msg.id} id={`msg-${msg.whatsapp_id}`} className={`flex max-w-[75%] gap-2 group ${msg.is_incoming ? 'self-start items-start' : 'self-end'}`}>
+                  {!msg.is_incoming && !isRevoked && (
+                    <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center self-center pr-1 gap-1">
+                      {msg.status !== 'pending' && msg.text && (
+                        <button onClick={() => {
+                          setEditMessage(msg);
+                          setReplyToMessage(null);
+                          let pureText = msg.text;
+                          const metaMatch = pureText.match(/\[(META|REPLY)\].*?\[\/\1\]\n?/g);
+                          if (metaMatch) {
+                            metaMatch.forEach(m => pureText = pureText.replace(m, ''));
+                          }
+                          pureText = pureText.replace(/^\*.*?\*\n\n/, '');
+                          setNewMessage(pureText);
+                        }} className="text-gray-400 hover:text-blue-500 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800" title="Editar">
+                          <Pencil size={14} />
+                        </button>
+                      )}
+                      <button onClick={() => setReplyToMessage(msg)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800" title="Responder">
+                        <Reply size={16} />
+                      </button>
+                      {(msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg') && (
+                        <button 
+                          onClick={() => handleTranscribe(msg)} 
+                          disabled={transcribingMessageId === msg.whatsapp_id}
+                          className="text-gray-400 hover:text-blue-500 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50" 
+                          title="Transcrever Áudio"
+                        >
+                          {transcribingMessageId === msg.whatsapp_id ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+                        </button>
+                      )}
+                      <div className="relative">
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setReactionMenuId(reactionMenuId === msg.id ? null : msg.id);
+                            setDeleteMenuId(null);
+                          }} 
+                          className="text-gray-400 hover:text-yellow-500 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800" 
+                          title="Reagir"
+                        >
+                          <Smile size={14} />
+                        </button>
+                        {reactionMenuId === msg.id && (
+                          <div className="absolute right-0 bottom-full mb-2 bg-white dark:bg-[#233138] rounded-full shadow-xl border border-gray-200 dark:border-gray-700 p-1 z-50 flex gap-1 animate-in fade-in zoom-in duration-200 origin-bottom-right">
+                            {['❤️', '👍', '😂', '😮', '😢', '🙏'].map(emoji => (
+                              <button key={emoji} onClick={() => handleReact(msg, emoji)} className="hover:bg-gray-100 dark:hover:bg-[#182229] p-1.5 rounded-full text-lg transition-transform hover:scale-125">
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteMenuId(deleteMenuId === msg.id ? null : msg.id);
+                          }} 
+                          className="text-gray-400 hover:text-red-500 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800" 
+                          title="Apagar"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                        {deleteMenuId === msg.id && (
+                          <div className="absolute right-0 bottom-full mb-2 w-48 bg-white dark:bg-[#233138] rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 py-1 z-50 animate-in fade-in zoom-in duration-200 origin-bottom-right">
+                            <button 
+                              onClick={() => handleDeleteMessage(msg, false)}
+                              className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-[#182229] transition-colors"
+                            >
+                              Apagar para mim
+                            </button>
+                            <button 
+                              onClick={() => handleDeleteMessage(msg, true)}
+                              className="w-full text-left px-4 py-2 text-sm text-red-500 hover:bg-gray-100 dark:hover:bg-[#182229] transition-colors"
+                            >
+                              Apagar para todos
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {msg.is_incoming && selectedChat.phone_number.includes('@g.us') && (
                     <div
                       className="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex-shrink-0 flex items-center justify-center overflow-hidden shadow-sm border border-gray-300 dark:border-gray-600 mt-1 cursor-pointer hover:opacity-80 transition-opacity"
@@ -1080,46 +1326,108 @@ export default function App() {
                         {agents[msg.sender_id]?.split(' ')[0] || 'Atendente'}
                       </div>
                     )}
-                    {msg.media_url && (
-                      <div className="mb-2 max-w-[280px] rounded overflow-hidden">
-                        {msg.media_type?.startsWith('image/') ? (
-                          <img
-                            src={`http://${window.location.hostname}:3001${msg.media_url}`}
-                            alt="Mídia Recebida"
-                            className="w-full h-auto object-cover rounded cursor-zoom-in hover:opacity-90 transition-opacity"
-                            onClick={() => setFullscreenMedia({ url: `http://${window.location.hostname}:3001${msg.media_url}`, type: msg.media_type || 'image/jpeg' })}
-                          />
-                        ) : msg.media_type?.startsWith('video/') ? (
-                          <video src={`http://${window.location.hostname}:3001${msg.media_url}`} controls className="w-full h-auto rounded" />
-                        ) : msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg' ? (
-                          <div className="min-w-[270px]">
-                            <AudioPlayer
-                              src={`http://${window.location.hostname}:3001${msg.media_url}`}
-                              senderPic={msgMeta?.pic || null}
-                              isIncoming={msg.is_incoming}
-                              msgTimestamp={formatTime(msg.timestamp)}
-                              msgStatus={msg.status}
-                              onProfileClick={() => {
-                                if (msgMeta?.number) {
-                                  fetchContactDetails(msgMeta.number);
-                                  setIsContactProfileOpen(true);
-                                }
-                              }}
-                            />
-                          </div>
-                        ) : (
-                          <a href={`http://${window.location.hostname}:3001${msg.media_url}`} target="_blank" rel="noreferrer" className="text-blue-500 underline text-sm flex items-center">
-                            <Paperclip size={14} className="mr-1" /> Arquivo Anexo
-                          </a>
-                        )}
+
+                    {isRevoked ? (
+                      <div className="flex items-center gap-2 text-gray-400 dark:text-gray-500 italic text-sm py-1 select-none min-w-[180px]">
+                        <Ban size={16} />
+                        <span>Mensagem apagada</span>
+                        <span className="text-[10px] ml-auto opacity-70 not-italic self-end mb-[-4px]">{formatTime(msg.timestamp)}</span>
                       </div>
-                    )}
-                    {textToRender && (
-                      <p className="text-gray-800 dark:text-gray-100 leading-relaxed break-words whitespace-pre-wrap" style={{ fontSize: `${chatFontSize}px` }}>
-                        {textToRender.replace(/^~.*:\n/, '')}
-                        {!(msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg') && (
-                          <span className="float-right flex items-center gap-1 ml-2 mt-2 select-none">
-                            <span className="text-xs text-gray-400">{formatTime(msg.timestamp)}</span>
+                    ) : (
+                      <>
+                        {msg.media_url && (
+                          <div className="mb-2 max-w-[280px] rounded overflow-hidden">
+                            {msg.media_type?.startsWith('image/') ? (
+                              <img
+                                src={`http://${window.location.hostname}:3001${msg.media_url}`}
+                                alt="Mídia Recebida"
+                                className="w-full h-auto object-cover rounded cursor-zoom-in hover:opacity-90 transition-opacity"
+                                onClick={() => setFullscreenMedia({ url: `http://${window.location.hostname}:3001${msg.media_url}`, type: msg.media_type || 'image/jpeg' })}
+                              />
+                            ) : msg.media_type?.startsWith('video/') ? (
+                              <video src={`http://${window.location.hostname}:3001${msg.media_url}`} controls className="w-full h-auto rounded" />
+                            ) : msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg' ? (
+                              <div className="min-w-[270px]">
+                                <AudioPlayer
+                                  src={`http://${window.location.hostname}:3001${msg.media_url}`}
+                                  senderPic={msgMeta?.pic || null}
+                                  isIncoming={msg.is_incoming}
+                                  msgTimestamp={formatTime(msg.timestamp)}
+                                  msgStatus={msg.status}
+                                  onProfileClick={() => {
+                                    if (msgMeta?.number) {
+                                      fetchContactDetails(msgMeta.number);
+                                      setIsContactProfileOpen(true);
+                                    }
+                                  }}
+                                />
+                                {audioTranscript && (
+                                  <div className="mt-2 p-2 bg-black/5 dark:bg-white/5 rounded-lg border-l-4 border-blue-400 animate-in fade-in slide-in-from-left-1 duration-500">
+                                    <div className="flex items-center gap-1 mb-1 opacity-60">
+                                      <Sparkles size={10} className="text-blue-500" />
+                                      <span className="text-[9px] font-bold uppercase tracking-wider">Transcrição IA</span>
+                                    </div>
+                                    <p className="text-[11px] italic text-gray-600 dark:text-gray-300 leading-tight" title="Transcrição Automática via IA">
+                                      "{audioTranscript}"
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <a href={`http://${window.location.hostname}:3001${msg.media_url}`} target="_blank" rel="noreferrer" className="text-blue-500 underline text-sm flex items-center">
+                                <Paperclip size={14} className="mr-1" /> Arquivo Anexo
+                              </a>
+                            )}
+                          </div>
+                        )}
+                        {textToRender && (
+                          <p className="text-gray-800 dark:text-gray-100 leading-relaxed break-words whitespace-pre-wrap" style={{ fontSize: `${chatFontSize}px` }}>
+                            {textToRender.replace(/^~.*:\n/, '')}
+                            {!(msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg') && (
+                              <span className="float-right flex items-center gap-1 ml-2 mt-2 select-none">
+                                <span className="text-xs text-gray-400">
+                                   {isEdited && <span className="mr-1 opacity-70 italic text-[10px]">Editada</span>}
+                                   {formatTime(msg.timestamp)}
+                                 </span>
+                                {!msg.is_incoming && (
+                                  <span className="flex items-center">
+                                    {msg.status === 'read' ? <CheckCheck size={14} className="text-blue-500" /> :
+                                      msg.status === 'delivered' ? <CheckCheck size={14} className="text-gray-400" /> :
+                                        msg.status === 'sent' ? <Check size={14} className="text-gray-400" /> :
+                                          <Clock size={12} className="text-gray-400" />}
+                                  </span>
+                                )}
+                              </span>
+                            )}
+                          </p>
+                        )}
+                        {messageReactions.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-2 mb-1">
+                            {messageReactions.map((r: any, idx: number) => (
+                              <div key={idx} className="bg-white/50 dark:bg-black/20 px-1.5 py-0.5 rounded-full text-xs flex items-center gap-1 shadow-sm border border-black/5 dark:border-white/5">
+                                <span>{r.reaction}</span>
+                                {r.count > 1 && <span className="text-[10px] opacity-70 font-bold">{r.count}</span>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {!textToRender && !(msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg') && (
+                          <div className="flex items-center justify-end gap-1 mt-1">
+                            {messageReactions.length > 0 && !textToRender && (
+                              <div className="flex flex-wrap gap-1 mr-auto">
+                                {messageReactions.map((r: any, idx: number) => (
+                                  <div key={idx} className="bg-white/50 dark:bg-black/20 px-1.5 py-0.5 rounded-full text-xs flex items-center gap-1 shadow-sm border border-black/5 dark:border-white/5">
+                                    <span>{r.reaction}</span>
+                                    {r.count > 1 && <span className="text-[10px] opacity-70 font-bold">{r.count}</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <span className="text-xs text-gray-400 block text-right">
+                               {isEdited && <span className="mr-1 opacity-70 italic text-[10px]">Editada</span>}
+                               {formatTime(msg.timestamp)}
+                             </span>
                             {!msg.is_incoming && (
                               <span className="flex items-center">
                                 {msg.status === 'read' ? <CheckCheck size={14} className="text-blue-500" /> :
@@ -1128,25 +1436,72 @@ export default function App() {
                                       <Clock size={12} className="text-gray-400" />}
                               </span>
                             )}
-                          </span>
+                          </div>
                         )}
-                      </p>
-                    )}
-
-                    {!textToRender && !(msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg') && (
-                      <div className="flex items-center justify-end gap-1 mt-1">
-                        <span className="text-xs text-gray-400 block text-right">{formatTime(msg.timestamp)}</span>
-                        {!msg.is_incoming && (
-                          <span className="flex items-center">
-                            {msg.status === 'read' ? <CheckCheck size={14} className="text-blue-500" /> :
-                              msg.status === 'delivered' ? <CheckCheck size={14} className="text-gray-400" /> :
-                                msg.status === 'sent' ? <Check size={14} className="text-gray-400" /> :
-                                  <Clock size={12} className="text-gray-400" />}
-                          </span>
-                        )}
-                      </div>
+                      </>
                     )}
                   </div>
+                  {msg.is_incoming && !isRevoked && (
+                    <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center self-center pl-1">
+                      <button onClick={() => setReplyToMessage(msg)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800" title="Responder">
+                        <Reply size={16} />
+                      </button>
+                      {(msg.media_type?.startsWith('audio/') || msg.media_type === 'video/ogg') && (
+                        <button 
+                          onClick={() => handleTranscribe(msg)} 
+                          disabled={transcribingMessageId === msg.whatsapp_id}
+                          className="text-gray-400 hover:text-blue-500 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50" 
+                          title="Transcrever Áudio"
+                        >
+                          {transcribingMessageId === msg.whatsapp_id ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+                        </button>
+                      )}
+                      <div className="relative">
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setReactionMenuId(reactionMenuId === msg.id ? null : msg.id);
+                            setDeleteMenuId(null);
+                          }} 
+                          className="text-gray-400 hover:text-yellow-500 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800" 
+                          title="Reagir"
+                        >
+                          <Smile size={14} />
+                        </button>
+                        {reactionMenuId === msg.id && (
+                          <div className="absolute left-0 bottom-full mb-2 bg-white dark:bg-[#233138] rounded-full shadow-xl border border-gray-200 dark:border-gray-700 p-1 z-50 flex gap-1 animate-in fade-in zoom-in duration-200 origin-bottom-left">
+                            {['❤️', '👍', '😂', '😮', '😢', '🙏'].map(emoji => (
+                              <button key={emoji} onClick={() => handleReact(msg, emoji)} className="hover:bg-gray-100 dark:hover:bg-[#182229] p-1.5 rounded-full text-lg transition-transform hover:scale-125">
+                                {emoji}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteMenuId(deleteMenuId === msg.id ? null : msg.id);
+                          }} 
+                          className="text-gray-400 hover:text-red-500 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800" 
+                          title="Apagar"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                        {deleteMenuId === msg.id && (
+                          <div className="absolute left-0 bottom-full mb-2 w-48 bg-white dark:bg-[#233138] rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 py-1 z-50 animate-in fade-in zoom-in duration-200 origin-bottom-left">
+                            <button 
+                              onClick={() => handleDeleteMessage(msg, false)}
+                              className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-[#182229] transition-colors"
+                            >
+                              Apagar para mim
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -1170,6 +1525,40 @@ export default function App() {
                 <div className="flex items-center gap-2 mb-2 px-2">
                   <div className="w-4 h-4 border-2 border-[#00a884] border-t-transparent rounded-full animate-spin"></div>
                   <span className="text-xs text-gray-500">Enviando arquivo...</span>
+                </div>
+              )}
+
+              {/* Painel de Edição (Edit) */}
+              {editMessage && (
+                <div className="mb-2 mx-1 flex items-center bg-gray-100 dark:bg-[#202c33] rounded-lg border-l-4 border-blue-500 p-2 relative">
+                  <div className="flex-1 min-w-0">
+                    <span className="text-xs font-bold text-blue-500 block truncate">
+                      Editando mensagem
+                    </span>
+                    <span className="text-sm text-gray-600 dark:text-gray-300 truncate block">
+                      {editMessage.text ? editMessage.text.replace(/\[(META|REPLY)\].*?\[\/\1\]\n?/g, '').replace(/^\*.*?\*\n\n/, '') : ''}
+                    </span>
+                  </div>
+                  <button onClick={() => { setEditMessage(null); setNewMessage(''); }} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 ml-2">
+                    <X size={16} />
+                  </button>
+                </div>
+              )}
+
+              {/* Painel de Resposta (Reply) */}
+              {replyToMessage && (
+                <div className="mb-2 mx-1 flex items-center bg-gray-100 dark:bg-[#202c33] rounded-lg border-l-4 border-[#00a884] p-2 relative">
+                  <div className="flex-1 min-w-0">
+                    <span className="text-xs font-bold text-[#00a884] block truncate">
+                      {replyToMessage.sender_id === user.id ? 'Você' : (agents[replyToMessage.sender_id] || selectedChat.contact_name || formatPhoneNumber(selectedChat.phone_number))}
+                    </span>
+                    <span className="text-sm text-gray-600 dark:text-gray-300 truncate block">
+                      {replyToMessage.text ? replyToMessage.text.replace(/\[(META|REPLY)\].*?\[\/\1\]\n?/g, '') : 'Mídia'}
+                    </span>
+                  </div>
+                  <button onClick={() => setReplyToMessage(null)} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 ml-2">
+                    <X size={16} />
+                  </button>
                 </div>
               )}
 
