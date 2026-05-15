@@ -341,6 +341,9 @@ export default function App() {
       });
     } else if (payload.eventType === 'UPDATE') {
       setChats(prev => prev.map(c => c.id === payload.new.id ? payload.new as Chat : c).sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()));
+    } else if (payload.eventType === 'DELETE') {
+      const deletedId = payload.old.id;
+      setChats(prev => prev.filter(c => c.id !== deletedId));
     }
   };
 
@@ -352,6 +355,9 @@ export default function App() {
       const updatedMsg = payload.new as Message;
       // Atualiza o status da mensagem se ela já estiver na lista
       setMessages(prev => prev.map(m => m.id === updatedMsg.id ? { ...m, ...updatedMsg } : m));
+    } else if (payload.eventType === 'DELETE') {
+      const deletedId = payload.old.id;
+      setMessages(prev => prev.filter(m => m.id !== deletedId));
     }
   };
 
@@ -1546,6 +1552,14 @@ export default function App() {
                             >
                               Apagar para mim
                             </button>
+                            {selectedChat?.phone_number?.endsWith('@g.us') && (
+                              <button 
+                                onClick={() => handleDeleteMessage(msg, true)}
+                                className="w-full text-left px-4 py-2 text-sm text-red-500 hover:bg-gray-100 dark:hover:bg-[#182229] transition-colors"
+                              >
+                                Apagar para todos
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
