@@ -29,7 +29,12 @@ export default function Login({ onLogin }: { onLogin: (user: any) => void }) {
           throw new Error('Este e-mail não foi convidado para o sistema.');
         }
 
-        // 2. Tentar o cadastro
+        // 2. Verificar domínio específico
+        if (!email.toLowerCase().endsWith('@edu.campos.rj.gov.br')) {
+          throw new Error('O e-mail deve pertencer ao domínio @edu.campos.rj.gov.br');
+        }
+
+        // 3. Tentar o cadastro
         ({ data, error: authError } = await supabase.auth.signUp({
           email,
           password,

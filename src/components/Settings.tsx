@@ -221,10 +221,9 @@ export default function Settings({ user, currentName, userRole, chatFontSize, on
   const handleAddInvite = async () => {
     if (!newInviteEmail.trim()) return;
     
-    // Validar domínio se necessário (opcional)
-    const allowedDomain = user.email?.split('@')[1];
-    if (allowedDomain && !newInviteEmail.endsWith(`@${allowedDomain}`)) {
-      showMessage('error', `O e-mail deve pertencer ao domínio @${allowedDomain}`);
+    // Validar domínio específico
+    if (!newInviteEmail.toLowerCase().endsWith('@edu.campos.rj.gov.br')) {
+      showMessage('error', 'O e-mail deve pertencer ao domínio @edu.campos.rj.gov.br');
       return;
     }
 
